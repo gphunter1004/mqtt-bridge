@@ -35,12 +35,20 @@ func NewDatabase(cfg *config.Config) (*Database, error) {
 	// Auto migrate the schema
 	log.Println("[DB] Starting database migration...")
 	err = db.AutoMigrate(
+		// Existing models
 		&models.ConnectionState{},
 		&models.ConnectionStateHistory{},
 		&models.AgvAction{},
 		&models.AgvActionParameter{},
 		&models.PhysicalParameter{},
 		&models.TypeSpecification{},
+		// New order management models
+		&models.OrderTemplate{},
+		&models.NodeTemplate{},
+		&models.EdgeTemplate{},
+		&models.ActionTemplate{},
+		&models.ActionParameterTemplate{},
+		&models.OrderExecution{},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %w", err)

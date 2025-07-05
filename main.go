@@ -49,12 +49,18 @@ func main() {
 
 	// Initialize services
 	bridgeService := services.NewBridgeService(db, redisClient, mqttClient)
+	orderService := services.NewOrderService(db, redisClient, mqttClient)
+	nodeService := services.NewNodeService(db)
+	edgeService := services.NewEdgeService(db)
 
 	// Initialize handlers
 	apiHandler := handlers.NewAPIHandler(bridgeService)
+	orderHandler := handlers.NewOrderHandler(orderService)
+	nodeHandler := handlers.NewNodeHandler(nodeService)
+	edgeHandler := handlers.NewEdgeHandler(edgeService)
 
 	// Setup HTTP router
-	router := setupRouter(apiHandler)
+	router := setupRouter(apiHandler, orderHandler, nodeHandler, edgeHandler)
 
 	// Start HTTP server
 	server := &http.Server{
@@ -92,7 +98,7 @@ func main() {
 	log.Println("Server stopped")
 }
 
-func setupRouter(apiHandler *handlers.APIHandler) *mux.Router {
+func setupRouter(apiHandler *handlers.APIHandler, orderHandler *handlers.OrderHandler, nodeHandler *handlers.NodeHandler, edgeHandler *handlers.EdgeHandler) *mux.Router {
 	router := mux.NewRouter()
 
 	// API routes
@@ -113,6 +119,39 @@ func setupRouter(apiHandler *handlers.APIHandler) *mux.Router {
 	api.HandleFunc("/robots/{serialNumber}/action", apiHandler.SendCustomAction).Methods("POST")
 	api.HandleFunc("/robots/{serialNumber}/inference", apiHandler.SendInferenceOrder).Methods("POST")
 	api.HandleFunc("/robots/{serialNumber}/trajectory", apiHandler.SendTrajectoryOrder).Methods("POST")
+
+	// Order Template Management
+	api.HandleFunc("/order-templates", orderHandler.CreateOrderTemplate).Methods("POST")
+	api.HandleFunc("/order-templates", orderHandler.ListOrderTemplates).Methods("GET")
+	api.HandleFunc("/order-templates/{id}", orderHandler.GetOrderTemplate).Methods("GET")
+	api.HandleFunc("/order-templates/{id}", orderHandler.UpdateOrderTemplate).Methods("PUT")
+	api.HandleFunc("/order-templates/{id}", orderHandler.DeleteOrderTemplate).Methods("DELETE")
+
+	// Order Execution
+	api.HandleFunc("/orders/execute", orderHandler.ExecuteOrder).Methods("POST")
+	api.HandleFunc("/orders/execute/template/{id}/robot/{serialNumber}", orderHandler.ExecuteOrderByTemplate).Methods("POST")
+	api.HandleFunc("/orders", orderHandler.ListOrderExecutions).Methods("GET")
+	api.HandleFunc("/orders/{orderId}", orderHandler.GetOrderExecution).Methods("GET")
+	api.HandleFunc("/orders/{orderId}/cancel", orderHandler.CancelOrder).Methods("POST")
+
+	// Robot-specific order endpoints
+	api.HandleFunc("/robots/{serialNumber}/orders", orderHandler.GetRobotOrderExecutions).Methods("GET")
+
+	// Node Management
+	api.HandleFunc("/order-templates/{templateId}/nodes", nodeHandler.CreateNode).Methods("POST")
+	api.HandleFunc("/order-templates/{templateId}/nodes", nodeHandler.ListNodes).Methods("GET")
+	api.HandleFunc("/order-templates/{templateId}/nodes/{nodeId}", nodeHandler.GetNodeByNodeID).Methods("GET")
+	api.HandleFunc("/nodes/{nodeId}", nodeHandler.GetNode).Methods("GET")
+	api.HandleFunc("/nodes/{nodeId}", nodeHandler.UpdateNode).Methods("PUT")
+	api.HandleFunc("/nodes/{nodeId}", nodeHandler.DeleteNode).Methods("DELETE")
+
+	// Edge Management
+	api.HandleFunc("/order-templates/{templateId}/edges", edgeHandler.CreateEdge).Methods("POST")
+	api.HandleFunc("/order-templates/{templateId}/edges", edgeHandler.ListEdges).Methods("GET")
+	api.HandleFunc("/order-templates/{templateId}/edges/{edgeId}", edgeHandler.GetEdgeByEdgeID).Methods("GET")
+	api.HandleFunc("/edges/{edgeId}", edgeHandler.GetEdge).Methods("GET")
+	api.HandleFunc("/edges/{edgeId}", edgeHandler.UpdateEdge).Methods("PUT")
+	api.HandleFunc("/edges/{edgeId}", edgeHandler.DeleteEdge).Methods("DELETE")
 
 	// Add CORS middleware
 	router.Use(corsMiddleware)
