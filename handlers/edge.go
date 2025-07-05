@@ -22,24 +22,15 @@ func NewEdgeHandler(edgeService *services.EdgeService) *EdgeHandler {
 	}
 }
 
-// CreateEdge creates a new edge in a template
+// CreateEdge creates a new edge
 func (h *EdgeHandler) CreateEdge(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	templateIDStr := vars["templateId"]
-
-	templateID, err := strconv.ParseUint(templateIDStr, 10, 32)
-	if err != nil {
-		http.Error(w, "Invalid template ID", http.StatusBadRequest)
-		return
-	}
-
 	var req models.EdgeTemplateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	edge, err := h.edgeService.CreateEdge(uint(templateID), &req)
+	edge, err := h.edgeService.CreateEdge(&req)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to create edge: %v", err), http.StatusInternalServerError)
 		return
@@ -71,19 +62,12 @@ func (h *EdgeHandler) GetEdge(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(edge)
 }
 
-// GetEdgeByEdgeID retrieves an edge by its edgeId within a template
+// GetEdgeByEdgeID retrieves an edge by its edgeId
 func (h *EdgeHandler) GetEdgeByEdgeID(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	templateIDStr := vars["templateId"]
 	edgeID := vars["edgeId"]
 
-	templateID, err := strconv.ParseUint(templateIDStr, 10, 32)
-	if err != nil {
-		http.Error(w, "Invalid template ID", http.StatusBadRequest)
-		return
-	}
-
-	edge, err := h.edgeService.GetEdgeByEdgeID(uint(templateID), edgeID)
+	edge, err := h.edgeService.GetEdgeByEdgeID(edgeID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to get edge: %v", err), http.StatusNotFound)
 		return
@@ -93,27 +77,34 @@ func (h *EdgeHandler) GetEdgeByEdgeID(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(edge)
 }
 
-// ListEdges retrieves all edges in a template
+// ListEdges retrieves all edges
 func (h *EdgeHandler) ListEdges(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	templateIDStr := vars["templateId"]
+	limitStr := r.URL.Query().Get("limit")
+	offsetStr := r.URL.Query().Get("offset")
 
-	templateID, err := strconv.ParseUint(templateIDStr, 10, 32)
-	if err != nil {
-		http.Error(w, "Invalid template ID", http.StatusBadRequest)
-		return
+	limit := 10 // default limit
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
 	}
 
-	edges, err := h.edgeService.ListEdges(uint(templateID))
+	offset := 0
+	if offsetStr != "" {
+		if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
+			offset = o
+		}
+	}
+
+	edges, err := h.edgeService.ListEdges(limit, offset)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to list edges: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	response := map[string]interface{}{
-		"templateId": templateID,
-		"edges":      edges,
-		"count":      len(edges),
+		"edges": edges,
+		"count": len(edges),
 	}
 
 	w.Header().Set("Content-Type", "application/json")

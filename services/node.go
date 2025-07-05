@@ -23,23 +23,17 @@ func NewNodeService(db *database.Database) *NodeService {
 
 // Node Management
 
-func (ns *NodeService) CreateNode(templateID uint, req *models.NodeTemplateRequest) (*models.NodeTemplate, error) {
-	// Check if template exists
-	var template models.OrderTemplate
-	if err := ns.db.DB.First(&template, templateID).Error; err != nil {
-		return nil, fmt.Errorf("order template not found: %w", err)
-	}
-
-	// Check if node ID already exists in this template
+func (ns *NodeService) CreateNode(req *models.NodeTemplateRequest) (*models.NodeTemplate, error) {
+	// Check if node ID already exists
 	var existingNode models.NodeTemplate
-	err := ns.db.DB.Where("order_template_id = ? AND node_id = ?", templateID, req.NodeID).First(&existingNode).Error
+	err := ns.db.DB.Where("node_id = ?", req.NodeID).First(&existingNode).Error
 	if err == nil {
-		return nil, fmt.Errorf("node with ID '%s' already exists in template %d", req.NodeID, templateID)
+		return nil, fmt.Errorf("node with ID '%s' already exists", req.NodeID)
 	}
 
 	node := &models.NodeTemplate{
-		OrderTemplateID:       templateID,
 		NodeID:                req.NodeID,
+		Name:                  req.Name,
 		Description:           req.Description,
 		SequenceID:            req.SequenceID,
 		Released:              req.Released,
@@ -81,7 +75,7 @@ func (ns *NodeService) CreateNode(templateID uint, req *models.NodeTemplateReque
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	log.Printf("[Node Service] Node created successfully: %s (ID: %d) in template %d", node.NodeID, node.ID, templateID)
+	log.Printf("[Node Service] Node created successfully: %s (ID: %d)", node.NodeID, node.ID)
 
 	// Fetch the complete node with actions
 	return ns.GetNode(node.ID)
@@ -100,9 +94,9 @@ func (ns *NodeService) GetNode(nodeID uint) (*models.NodeTemplate, error) {
 	return &node, nil
 }
 
-func (ns *NodeService) GetNodeByNodeID(templateID uint, nodeID string) (*models.NodeTemplate, error) {
+func (ns *NodeService) GetNodeByNodeID(nodeID string) (*models.NodeTemplate, error) {
 	var node models.NodeTemplate
-	err := ns.db.DB.Where("order_template_id = ? AND node_id = ?", templateID, nodeID).
+	err := ns.db.DB.Where("node_id = ?", nodeID).
 		Preload("Actions.Parameters").
 		First(&node).Error
 
@@ -113,18 +107,23 @@ func (ns *NodeService) GetNodeByNodeID(templateID uint, nodeID string) (*models.
 	return &node, nil
 }
 
-func (ns *NodeService) ListNodes(templateID uint) ([]models.NodeTemplate, error) {
+func (ns *NodeService) ListNodes(limit, offset int) ([]models.NodeTemplate, error) {
 	var nodes []models.NodeTemplate
-	err := ns.db.DB.Where("order_template_id = ?", templateID).
-		Preload("Actions.Parameters").
-		Order("sequence_id ASC").
-		Find(&nodes).Error
+	query := ns.db.DB.Preload("Actions.Parameters").Order("created_at DESC")
 
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	if offset > 0 {
+		query = query.Offset(offset)
+	}
+
+	err := query.Find(&nodes).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to list nodes: %w", err)
 	}
 
-	log.Printf("[Node Service] Retrieved %d nodes for template %d", len(nodes), templateID)
+	log.Printf("[Node Service] Retrieved %d nodes", len(nodes))
 	return nodes, nil
 }
 
@@ -138,10 +137,10 @@ func (ns *NodeService) UpdateNode(nodeID uint, req *models.NodeTemplateRequest) 
 	// Check for nodeID conflicts (if nodeID is being changed)
 	if existingNode.NodeID != req.NodeID {
 		var conflictNode models.NodeTemplate
-		err := ns.db.DB.Where("order_template_id = ? AND node_id = ? AND id != ?",
-			existingNode.OrderTemplateID, req.NodeID, nodeID).First(&conflictNode).Error
+		err := ns.db.DB.Where("node_id = ? AND id != ?",
+			req.NodeID, nodeID).First(&conflictNode).Error
 		if err == nil {
-			return nil, fmt.Errorf("node with ID '%s' already exists in template", req.NodeID)
+			return nil, fmt.Errorf("node with ID '%s' already exists", req.NodeID)
 		}
 	}
 
@@ -159,6 +158,7 @@ func (ns *NodeService) UpdateNode(nodeID uint, req *models.NodeTemplateRequest) 
 	// Update node
 	updateNode := &models.NodeTemplate{
 		NodeID:                req.NodeID,
+		Name:                  req.Name,
 		Description:           req.Description,
 		SequenceID:            req.SequenceID,
 		Released:              req.Released,
@@ -220,6 +220,12 @@ func (ns *NodeService) DeleteNode(nodeID uint) error {
 	if err := ns.deleteNodeActions(tx, nodeID); err != nil {
 		tx.Rollback()
 		return fmt.Errorf("failed to delete node actions: %w", err)
+	}
+
+	// Delete template associations
+	if err := tx.Where("node_template_id = ?", nodeID).Delete(&models.OrderTemplateNode{}).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to delete template associations: %w", err)
 	}
 
 	// Delete node

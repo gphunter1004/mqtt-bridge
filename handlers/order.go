@@ -64,6 +64,27 @@ func (h *OrderHandler) GetOrderTemplate(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(template)
 }
 
+// GetOrderTemplateWithDetails retrieves a template with associated nodes and edges
+func (h *OrderHandler) GetOrderTemplateWithDetails(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	idStr := vars["id"]
+
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		http.Error(w, "Invalid template ID", http.StatusBadRequest)
+		return
+	}
+
+	templateDetails, err := h.orderService.GetOrderTemplateWithDetails(uint(id))
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to get order template details: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(templateDetails)
+}
+
 // ListOrderTemplates retrieves all order templates
 func (h *OrderHandler) ListOrderTemplates(w http.ResponseWriter, r *http.Request) {
 	limitStr := r.URL.Query().Get("limit")
@@ -333,6 +354,72 @@ func (h *OrderHandler) CancelOrder(w http.ResponseWriter, r *http.Request) {
 	response := map[string]string{
 		"status":  "success",
 		"message": fmt.Sprintf("Order %s cancelled successfully", orderID),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// Template Association Management
+
+// AssociateNodes associates existing nodes with a template
+func (h *OrderHandler) AssociateNodes(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	idStr := vars["id"]
+
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		http.Error(w, "Invalid template ID", http.StatusBadRequest)
+		return
+	}
+
+	var req models.AssociateNodesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	err = h.orderService.AssociateNodes(uint(id), &req)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to associate nodes: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]string{
+		"status":  "success",
+		"message": fmt.Sprintf("Nodes associated successfully with template %d", id),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// AssociateEdges associates existing edges with a template
+func (h *OrderHandler) AssociateEdges(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	idStr := vars["id"]
+
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		http.Error(w, "Invalid template ID", http.StatusBadRequest)
+		return
+	}
+
+	var req models.AssociateEdgesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	err = h.orderService.AssociateEdges(uint(id), &req)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to associate edges: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]string{
+		"status":  "success",
+		"message": fmt.Sprintf("Edges associated successfully with template %d", id),
 	}
 
 	w.Header().Set("Content-Type", "application/json")

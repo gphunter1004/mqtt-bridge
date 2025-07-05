@@ -124,8 +124,13 @@ func setupRouter(apiHandler *handlers.APIHandler, orderHandler *handlers.OrderHa
 	api.HandleFunc("/order-templates", orderHandler.CreateOrderTemplate).Methods("POST")
 	api.HandleFunc("/order-templates", orderHandler.ListOrderTemplates).Methods("GET")
 	api.HandleFunc("/order-templates/{id}", orderHandler.GetOrderTemplate).Methods("GET")
+	api.HandleFunc("/order-templates/{id}/details", orderHandler.GetOrderTemplateWithDetails).Methods("GET")
 	api.HandleFunc("/order-templates/{id}", orderHandler.UpdateOrderTemplate).Methods("PUT")
 	api.HandleFunc("/order-templates/{id}", orderHandler.DeleteOrderTemplate).Methods("DELETE")
+
+	// Template Association Management
+	api.HandleFunc("/order-templates/{id}/associate-nodes", orderHandler.AssociateNodes).Methods("POST")
+	api.HandleFunc("/order-templates/{id}/associate-edges", orderHandler.AssociateEdges).Methods("POST")
 
 	// Order Execution
 	api.HandleFunc("/orders/execute", orderHandler.ExecuteOrder).Methods("POST")
@@ -137,21 +142,21 @@ func setupRouter(apiHandler *handlers.APIHandler, orderHandler *handlers.OrderHa
 	// Robot-specific order endpoints
 	api.HandleFunc("/robots/{serialNumber}/orders", orderHandler.GetRobotOrderExecutions).Methods("GET")
 
-	// Node Management
-	api.HandleFunc("/order-templates/{templateId}/nodes", nodeHandler.CreateNode).Methods("POST")
-	api.HandleFunc("/order-templates/{templateId}/nodes", nodeHandler.ListNodes).Methods("GET")
-	api.HandleFunc("/order-templates/{templateId}/nodes/{nodeId}", nodeHandler.GetNodeByNodeID).Methods("GET")
+	// Node Management (Independent)
+	api.HandleFunc("/nodes", nodeHandler.CreateNode).Methods("POST")
+	api.HandleFunc("/nodes", nodeHandler.ListNodes).Methods("GET")
 	api.HandleFunc("/nodes/{nodeId}", nodeHandler.GetNode).Methods("GET")
 	api.HandleFunc("/nodes/{nodeId}", nodeHandler.UpdateNode).Methods("PUT")
 	api.HandleFunc("/nodes/{nodeId}", nodeHandler.DeleteNode).Methods("DELETE")
+	api.HandleFunc("/nodes/by-node-id/{nodeId}", nodeHandler.GetNodeByNodeID).Methods("GET")
 
-	// Edge Management
-	api.HandleFunc("/order-templates/{templateId}/edges", edgeHandler.CreateEdge).Methods("POST")
-	api.HandleFunc("/order-templates/{templateId}/edges", edgeHandler.ListEdges).Methods("GET")
-	api.HandleFunc("/order-templates/{templateId}/edges/{edgeId}", edgeHandler.GetEdgeByEdgeID).Methods("GET")
+	// Edge Management (Independent)
+	api.HandleFunc("/edges", edgeHandler.CreateEdge).Methods("POST")
+	api.HandleFunc("/edges", edgeHandler.ListEdges).Methods("GET")
 	api.HandleFunc("/edges/{edgeId}", edgeHandler.GetEdge).Methods("GET")
 	api.HandleFunc("/edges/{edgeId}", edgeHandler.UpdateEdge).Methods("PUT")
 	api.HandleFunc("/edges/{edgeId}", edgeHandler.DeleteEdge).Methods("DELETE")
+	api.HandleFunc("/edges/by-edge-id/{edgeId}", edgeHandler.GetEdgeByEdgeID).Methods("GET")
 
 	// Add CORS middleware
 	router.Use(corsMiddleware)

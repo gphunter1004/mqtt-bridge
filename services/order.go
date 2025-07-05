@@ -1,7 +1,6 @@
 package services
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -10,8 +9,6 @@ import (
 	"mqtt-bridge/models"
 	"mqtt-bridge/mqtt"
 	"mqtt-bridge/redis"
-
-	"gorm.io/gorm"
 )
 
 type OrderService struct {
@@ -53,58 +50,39 @@ func (os *OrderService) CreateOrderTemplate(req *models.CreateOrderTemplateReque
 		return nil, fmt.Errorf("failed to create order template: %w", err)
 	}
 
-	// Create nodes
-	for _, nodeReq := range req.Nodes {
-		node := &models.NodeTemplate{
-			OrderTemplateID:       template.ID,
-			NodeID:                nodeReq.NodeID,
-			Description:           nodeReq.Description,
-			SequenceID:            nodeReq.SequenceID,
-			Released:              nodeReq.Released,
-			X:                     nodeReq.Position.X,
-			Y:                     nodeReq.Position.Y,
-			Theta:                 nodeReq.Position.Theta,
-			AllowedDeviationXY:    nodeReq.Position.AllowedDeviationXY,
-			AllowedDeviationTheta: nodeReq.Position.AllowedDeviationTheta,
-			MapID:                 nodeReq.Position.MapID,
-		}
-
-		if err := tx.Create(node).Error; err != nil {
+	// Associate existing nodes with template
+	for _, nodeID := range req.NodeIDs {
+		var node models.NodeTemplate
+		if err := tx.Where("node_id = ?", nodeID).First(&node).Error; err != nil {
 			tx.Rollback()
-			return nil, fmt.Errorf("failed to create node template: %w", err)
+			return nil, fmt.Errorf("node '%s' not found: %w", nodeID, err)
 		}
 
-		// Create actions for node
-		for _, actionReq := range nodeReq.Actions {
-			if err := os.createActionTemplate(tx, &actionReq, &node.ID, nil); err != nil {
-				tx.Rollback()
-				return nil, fmt.Errorf("failed to create node action: %w", err)
-			}
+		association := &models.OrderTemplateNode{
+			OrderTemplateID: template.ID,
+			NodeTemplateID:  node.ID,
+		}
+		if err := tx.Create(association).Error; err != nil {
+			tx.Rollback()
+			return nil, fmt.Errorf("failed to associate node '%s': %w", nodeID, err)
 		}
 	}
 
-	// Create edges
-	for _, edgeReq := range req.Edges {
-		edge := &models.EdgeTemplate{
-			OrderTemplateID: template.ID,
-			EdgeID:          edgeReq.EdgeID,
-			SequenceID:      edgeReq.SequenceID,
-			Released:        edgeReq.Released,
-			StartNodeID:     edgeReq.StartNodeID,
-			EndNodeID:       edgeReq.EndNodeID,
-		}
-
-		if err := tx.Create(edge).Error; err != nil {
+	// Associate existing edges with template
+	for _, edgeID := range req.EdgeIDs {
+		var edge models.EdgeTemplate
+		if err := tx.Where("edge_id = ?", edgeID).First(&edge).Error; err != nil {
 			tx.Rollback()
-			return nil, fmt.Errorf("failed to create edge template: %w", err)
+			return nil, fmt.Errorf("edge '%s' not found: %w", edgeID, err)
 		}
 
-		// Create actions for edge
-		for _, actionReq := range edgeReq.Actions {
-			if err := os.createActionTemplate(tx, &actionReq, nil, &edge.ID); err != nil {
-				tx.Rollback()
-				return nil, fmt.Errorf("failed to create edge action: %w", err)
-			}
+		association := &models.OrderTemplateEdge{
+			OrderTemplateID: template.ID,
+			EdgeTemplateID:  edge.ID,
+		}
+		if err := tx.Create(association).Error; err != nil {
+			tx.Rollback()
+			return nil, fmt.Errorf("failed to associate edge '%s': %w", edgeID, err)
 		}
 	}
 
@@ -113,78 +91,15 @@ func (os *OrderService) CreateOrderTemplate(req *models.CreateOrderTemplateReque
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	// Fetch the complete template with preloaded data
+	log.Printf("[Order Service] Order template created successfully: %s (ID: %d)", template.Name, template.ID)
+
+	// Fetch the complete template with associations
 	return os.GetOrderTemplate(template.ID)
-}
-
-func (os *OrderService) createActionTemplate(tx *gorm.DB, actionReq *models.ActionTemplateRequest,
-	nodeID *uint, edgeID *uint) error {
-
-	action := &models.ActionTemplate{
-		NodeTemplateID:    nodeID,
-		EdgeTemplateID:    edgeID,
-		ActionType:        actionReq.ActionType,
-		ActionID:          actionReq.ActionID,
-		BlockingType:      actionReq.BlockingType,
-		ActionDescription: actionReq.ActionDescription,
-	}
-
-	if err := tx.Create(action).Error; err != nil {
-		return err
-	}
-
-	// Create action parameters
-	for _, paramReq := range actionReq.Parameters {
-		// Convert value to JSON string based on type
-		valueStr, err := os.convertValueToString(paramReq.Value, paramReq.ValueType)
-		if err != nil {
-			return fmt.Errorf("failed to convert parameter value: %w", err)
-		}
-
-		param := &models.ActionParameterTemplate{
-			ActionTemplateID: action.ID,
-			Key:              paramReq.Key,
-			Value:            valueStr,
-			ValueType:        paramReq.ValueType,
-		}
-
-		if err := tx.Create(param).Error; err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (os *OrderService) convertValueToString(value interface{}, valueType string) (string, error) {
-	if value == nil {
-		return "", nil
-	}
-
-	switch valueType {
-	case "string":
-		if str, ok := value.(string); ok {
-			return str, nil
-		}
-		return fmt.Sprintf("%v", value), nil
-	case "object", "number", "boolean":
-		jsonBytes, err := json.Marshal(value)
-		if err != nil {
-			return "", err
-		}
-		return string(jsonBytes), nil
-	default:
-		return fmt.Sprintf("%v", value), nil
-	}
 }
 
 func (os *OrderService) GetOrderTemplate(id uint) (*models.OrderTemplate, error) {
 	var template models.OrderTemplate
-	err := os.db.DB.Where("id = ?", id).
-		Preload("Nodes.Actions.Parameters").
-		Preload("Edges.Actions.Parameters").
-		First(&template).Error
-
+	err := os.db.DB.Where("id = ?", id).First(&template).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get order template: %w", err)
 	}
@@ -192,9 +107,53 @@ func (os *OrderService) GetOrderTemplate(id uint) (*models.OrderTemplate, error)
 	return &template, nil
 }
 
+func (os *OrderService) GetOrderTemplateWithDetails(id uint) (*OrderTemplateWithDetails, error) {
+	template, err := os.GetOrderTemplate(id)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get associated nodes
+	var nodeAssociations []models.OrderTemplateNode
+	err = os.db.DB.Where("order_template_id = ?", id).
+		Preload("NodeTemplate.Actions.Parameters").
+		Find(&nodeAssociations).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to get template nodes: %w", err)
+	}
+
+	// Get associated edges
+	var edgeAssociations []models.OrderTemplateEdge
+	err = os.db.DB.Where("order_template_id = ?", id).
+		Preload("EdgeTemplate.Actions.Parameters").
+		Find(&edgeAssociations).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to get template edges: %w", err)
+	}
+
+	// Extract nodes and edges
+	nodes := make([]models.NodeTemplate, len(nodeAssociations))
+	for i, assoc := range nodeAssociations {
+		nodes[i] = assoc.NodeTemplate
+	}
+
+	edges := make([]models.EdgeTemplate, len(edgeAssociations))
+	for i, assoc := range edgeAssociations {
+		edges[i] = assoc.EdgeTemplate
+	}
+
+	result := &OrderTemplateWithDetails{
+		OrderTemplate: *template,
+		Nodes:         nodes,
+		Edges:         edges,
+	}
+
+	return result, nil
+}
+
 func (os *OrderService) ListOrderTemplates(limit, offset int) ([]models.OrderTemplate, error) {
 	var templates []models.OrderTemplate
-	query := os.db.DB.Preload("Nodes").Preload("Edges")
+	query := os.db.DB.Order("created_at DESC")
 
 	if limit > 0 {
 		query = query.Limit(limit)
@@ -234,56 +193,57 @@ func (os *OrderService) UpdateOrderTemplate(id uint, req *models.CreateOrderTemp
 		return nil, fmt.Errorf("failed to update order template: %w", err)
 	}
 
-	// Delete existing nodes, edges, and their actions
-	if err := os.deleteTemplateContent(tx, id); err != nil {
+	// Delete existing associations
+	if err := tx.Where("order_template_id = ?", id).Delete(&models.OrderTemplateNode{}).Error; err != nil {
 		tx.Rollback()
-		return nil, fmt.Errorf("failed to delete existing template content: %w", err)
+		return nil, fmt.Errorf("failed to delete existing node associations: %w", err)
+	}
+	if err := tx.Where("order_template_id = ?", id).Delete(&models.OrderTemplateEdge{}).Error; err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("failed to delete existing edge associations: %w", err)
 	}
 
-	// Set the ID for the template object
-	template.ID = id
+	// Create new node associations
+	for _, nodeID := range req.NodeIDs {
+		var node models.NodeTemplate
+		if err := tx.Where("node_id = ?", nodeID).First(&node).Error; err != nil {
+			tx.Rollback()
+			return nil, fmt.Errorf("node '%s' not found: %w", nodeID, err)
+		}
 
-	// Recreate nodes and edges (similar to CreateOrderTemplate)
-	// ... (implementation similar to CreateOrderTemplate)
+		association := &models.OrderTemplateNode{
+			OrderTemplateID: id,
+			NodeTemplateID:  node.ID,
+		}
+		if err := tx.Create(association).Error; err != nil {
+			tx.Rollback()
+			return nil, fmt.Errorf("failed to associate node '%s': %w", nodeID, err)
+		}
+	}
+
+	// Create new edge associations
+	for _, edgeID := range req.EdgeIDs {
+		var edge models.EdgeTemplate
+		if err := tx.Where("edge_id = ?", edgeID).First(&edge).Error; err != nil {
+			tx.Rollback()
+			return nil, fmt.Errorf("edge '%s' not found: %w", edgeID, err)
+		}
+
+		association := &models.OrderTemplateEdge{
+			OrderTemplateID: id,
+			EdgeTemplateID:  edge.ID,
+		}
+		if err := tx.Create(association).Error; err != nil {
+			tx.Rollback()
+			return nil, fmt.Errorf("failed to associate edge '%s': %w", edgeID, err)
+		}
+	}
 
 	if err := tx.Commit().Error; err != nil {
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return os.GetOrderTemplate(id)
-}
-
-func (os *OrderService) deleteTemplateContent(tx *gorm.DB, templateID uint) error {
-	// Delete action parameters
-	if err := tx.Exec(`
-		DELETE FROM action_parameter_templates 
-		WHERE action_template_id IN (
-			SELECT id FROM action_templates 
-			WHERE node_template_id IN (SELECT id FROM node_templates WHERE order_template_id = ?)
-			OR edge_template_id IN (SELECT id FROM edge_templates WHERE order_template_id = ?)
-		)
-	`, templateID, templateID).Error; err != nil {
-		return err
-	}
-
-	// Delete actions
-	if err := tx.Exec(`
-		DELETE FROM action_templates 
-		WHERE node_template_id IN (SELECT id FROM node_templates WHERE order_template_id = ?)
-		OR edge_template_id IN (SELECT id FROM edge_templates WHERE order_template_id = ?)
-	`, templateID, templateID).Error; err != nil {
-		return err
-	}
-
-	// Delete nodes and edges
-	if err := tx.Where("order_template_id = ?", templateID).Delete(&models.NodeTemplate{}).Error; err != nil {
-		return err
-	}
-	if err := tx.Where("order_template_id = ?", templateID).Delete(&models.EdgeTemplate{}).Error; err != nil {
-		return err
-	}
-
-	return nil
 }
 
 func (os *OrderService) DeleteOrderTemplate(id uint) error {
@@ -297,10 +257,14 @@ func (os *OrderService) DeleteOrderTemplate(id uint) error {
 		}
 	}()
 
-	// Delete content first
-	if err := os.deleteTemplateContent(tx, id); err != nil {
+	// Delete associations
+	if err := tx.Where("order_template_id = ?", id).Delete(&models.OrderTemplateNode{}).Error; err != nil {
 		tx.Rollback()
-		return fmt.Errorf("failed to delete template content: %w", err)
+		return fmt.Errorf("failed to delete node associations: %w", err)
+	}
+	if err := tx.Where("order_template_id = ?", id).Delete(&models.OrderTemplateEdge{}).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to delete edge associations: %w", err)
 	}
 
 	// Delete template
@@ -315,8 +279,8 @@ func (os *OrderService) DeleteOrderTemplate(id uint) error {
 // Order Execution
 
 func (os *OrderService) ExecuteOrder(req *models.ExecuteOrderRequest) (*models.OrderExecutionResponse, error) {
-	// Get order template
-	template, err := os.GetOrderTemplate(req.TemplateID)
+	// Get order template with details
+	templateDetails, err := os.GetOrderTemplateWithDetails(req.TemplateID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get order template: %w", err)
 	}
@@ -333,7 +297,7 @@ func (os *OrderService) ExecuteOrder(req *models.ExecuteOrderRequest) (*models.O
 	// Create order execution record
 	execution := &models.OrderExecution{
 		OrderID:         orderID,
-		OrderTemplateID: &template.ID,
+		OrderTemplateID: &templateDetails.OrderTemplate.ID,
 		SerialNumber:    req.SerialNumber,
 		OrderUpdateID:   0,
 		Status:          "CREATED",
@@ -344,7 +308,7 @@ func (os *OrderService) ExecuteOrder(req *models.ExecuteOrderRequest) (*models.O
 	}
 
 	// Convert template to MQTT order message
-	orderMsg, err := os.convertTemplateToOrderMessage(template, orderID, req.SerialNumber, req.ParameterOverrides)
+	orderMsg, err := os.convertTemplateToOrderMessage(templateDetails, orderID, req.SerialNumber, req.ParameterOverrides)
 	if err != nil {
 		// Update status to failed
 		os.updateOrderStatus(orderID, "FAILED", err.Error())
@@ -371,17 +335,17 @@ func (os *OrderService) ExecuteOrder(req *models.ExecuteOrderRequest) (*models.O
 		OrderID:         orderID,
 		Status:          "SENT",
 		SerialNumber:    req.SerialNumber,
-		OrderTemplateID: &template.ID,
+		OrderTemplateID: &templateDetails.OrderTemplate.ID,
 		CreatedAt:       execution.CreatedAt,
 	}, nil
 }
 
-func (os *OrderService) convertTemplateToOrderMessage(template *models.OrderTemplate,
+func (os *OrderService) convertTemplateToOrderMessage(templateDetails *OrderTemplateWithDetails,
 	orderID, serialNumber string, paramOverrides map[string]interface{}) (*models.OrderMessage, error) {
 
 	// Convert nodes
-	nodes := make([]models.Node, len(template.Nodes))
-	for i, nodeTemplate := range template.Nodes {
+	nodes := make([]models.Node, len(templateDetails.Nodes))
+	for i, nodeTemplate := range templateDetails.Nodes {
 		nodes[i] = nodeTemplate.ToNode()
 
 		// Apply parameter overrides
@@ -393,8 +357,8 @@ func (os *OrderService) convertTemplateToOrderMessage(template *models.OrderTemp
 	}
 
 	// Convert edges
-	edges := make([]models.Edge, len(template.Edges))
-	for i, edgeTemplate := range template.Edges {
+	edges := make([]models.Edge, len(templateDetails.Edges))
+	for i, edgeTemplate := range templateDetails.Edges {
 		edges[i] = edgeTemplate.ToEdge()
 
 		// Apply parameter overrides
@@ -492,4 +456,89 @@ func (os *OrderService) CancelOrder(orderID string) error {
 	return os.db.DB.Model(&models.OrderExecution{}).
 		Where("order_id = ? AND status IN ('CREATED', 'SENT', 'EXECUTING')", orderID).
 		Update("status", "CANCELLED").Error
+}
+
+// Template Association Management
+
+func (os *OrderService) AssociateNodes(templateID uint, req *models.AssociateNodesRequest) error {
+	tx := os.db.DB.Begin()
+	if tx.Error != nil {
+		return fmt.Errorf("failed to start transaction: %w", tx.Error)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	for _, nodeID := range req.NodeIDs {
+		var node models.NodeTemplate
+		if err := tx.Where("node_id = ?", nodeID).First(&node).Error; err != nil {
+			tx.Rollback()
+			return fmt.Errorf("node '%s' not found: %w", nodeID, err)
+		}
+
+		// Check if association already exists
+		var existing models.OrderTemplateNode
+		err := tx.Where("order_template_id = ? AND node_template_id = ?", templateID, node.ID).First(&existing).Error
+		if err == nil {
+			continue // Association already exists
+		}
+
+		association := &models.OrderTemplateNode{
+			OrderTemplateID: templateID,
+			NodeTemplateID:  node.ID,
+		}
+		if err := tx.Create(association).Error; err != nil {
+			tx.Rollback()
+			return fmt.Errorf("failed to associate node '%s': %w", nodeID, err)
+		}
+	}
+
+	return tx.Commit().Error
+}
+
+func (os *OrderService) AssociateEdges(templateID uint, req *models.AssociateEdgesRequest) error {
+	tx := os.db.DB.Begin()
+	if tx.Error != nil {
+		return fmt.Errorf("failed to start transaction: %w", tx.Error)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	for _, edgeID := range req.EdgeIDs {
+		var edge models.EdgeTemplate
+		if err := tx.Where("edge_id = ?", edgeID).First(&edge).Error; err != nil {
+			tx.Rollback()
+			return fmt.Errorf("edge '%s' not found: %w", edgeID, err)
+		}
+
+		// Check if association already exists
+		var existing models.OrderTemplateEdge
+		err := tx.Where("order_template_id = ? AND edge_template_id = ?", templateID, edge.ID).First(&existing).Error
+		if err == nil {
+			continue // Association already exists
+		}
+
+		association := &models.OrderTemplateEdge{
+			OrderTemplateID: templateID,
+			EdgeTemplateID:  edge.ID,
+		}
+		if err := tx.Create(association).Error; err != nil {
+			tx.Rollback()
+			return fmt.Errorf("failed to associate edge '%s': %w", edgeID, err)
+		}
+	}
+
+	return tx.Commit().Error
+}
+
+// Helper structures
+type OrderTemplateWithDetails struct {
+	OrderTemplate models.OrderTemplate  `json:"orderTemplate"`
+	Nodes         []models.NodeTemplate `json:"nodes"`
+	Edges         []models.EdgeTemplate `json:"edges"`
 }

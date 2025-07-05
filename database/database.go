@@ -49,6 +49,8 @@ func NewDatabase(cfg *config.Config) (*Database, error) {
 		&models.ActionTemplate{},
 		&models.ActionParameterTemplate{},
 		&models.OrderExecution{},
+		&models.OrderTemplateNode{},
+		&models.OrderTemplateEdge{},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %w", err)

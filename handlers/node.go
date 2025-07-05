@@ -22,24 +22,15 @@ func NewNodeHandler(nodeService *services.NodeService) *NodeHandler {
 	}
 }
 
-// CreateNode creates a new node in a template
+// CreateNode creates a new node
 func (h *NodeHandler) CreateNode(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	templateIDStr := vars["templateId"]
-
-	templateID, err := strconv.ParseUint(templateIDStr, 10, 32)
-	if err != nil {
-		http.Error(w, "Invalid template ID", http.StatusBadRequest)
-		return
-	}
-
 	var req models.NodeTemplateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	node, err := h.nodeService.CreateNode(uint(templateID), &req)
+	node, err := h.nodeService.CreateNode(&req)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to create node: %v", err), http.StatusInternalServerError)
 		return
@@ -71,19 +62,12 @@ func (h *NodeHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(node)
 }
 
-// GetNodeByNodeID retrieves a node by its nodeId within a template
+// GetNodeByNodeID retrieves a node by its nodeId
 func (h *NodeHandler) GetNodeByNodeID(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	templateIDStr := vars["templateId"]
 	nodeID := vars["nodeId"]
 
-	templateID, err := strconv.ParseUint(templateIDStr, 10, 32)
-	if err != nil {
-		http.Error(w, "Invalid template ID", http.StatusBadRequest)
-		return
-	}
-
-	node, err := h.nodeService.GetNodeByNodeID(uint(templateID), nodeID)
+	node, err := h.nodeService.GetNodeByNodeID(nodeID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to get node: %v", err), http.StatusNotFound)
 		return
@@ -93,27 +77,34 @@ func (h *NodeHandler) GetNodeByNodeID(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(node)
 }
 
-// ListNodes retrieves all nodes in a template
+// ListNodes retrieves all nodes
 func (h *NodeHandler) ListNodes(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	templateIDStr := vars["templateId"]
+	limitStr := r.URL.Query().Get("limit")
+	offsetStr := r.URL.Query().Get("offset")
 
-	templateID, err := strconv.ParseUint(templateIDStr, 10, 32)
-	if err != nil {
-		http.Error(w, "Invalid template ID", http.StatusBadRequest)
-		return
+	limit := 10 // default limit
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
 	}
 
-	nodes, err := h.nodeService.ListNodes(uint(templateID))
+	offset := 0
+	if offsetStr != "" {
+		if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
+			offset = o
+		}
+	}
+
+	nodes, err := h.nodeService.ListNodes(limit, offset)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to list nodes: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	response := map[string]interface{}{
-		"templateId": templateID,
-		"nodes":      nodes,
-		"count":      len(nodes),
+		"nodes": nodes,
+		"count": len(nodes),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
