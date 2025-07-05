@@ -52,15 +52,17 @@ func main() {
 	orderService := services.NewOrderService(db, redisClient, mqttClient)
 	nodeService := services.NewNodeService(db)
 	edgeService := services.NewEdgeService(db)
+	actionService := services.NewActionService(db)
 
 	// Initialize handlers
 	apiHandler := handlers.NewAPIHandler(bridgeService)
 	orderHandler := handlers.NewOrderHandler(orderService)
 	nodeHandler := handlers.NewNodeHandler(nodeService)
 	edgeHandler := handlers.NewEdgeHandler(edgeService)
+	actionHandler := handlers.NewActionHandler(actionService)
 
 	// Setup HTTP router
-	router := setupRouter(apiHandler, orderHandler, nodeHandler, edgeHandler)
+	router := setupRouter(apiHandler, orderHandler, nodeHandler, edgeHandler, actionHandler)
 
 	// Start HTTP server
 	server := &http.Server{
@@ -98,7 +100,7 @@ func main() {
 	log.Println("Server stopped")
 }
 
-func setupRouter(apiHandler *handlers.APIHandler, orderHandler *handlers.OrderHandler, nodeHandler *handlers.NodeHandler, edgeHandler *handlers.EdgeHandler) *mux.Router {
+func setupRouter(apiHandler *handlers.APIHandler, orderHandler *handlers.OrderHandler, nodeHandler *handlers.NodeHandler, edgeHandler *handlers.EdgeHandler, actionHandler *handlers.ActionHandler) *mux.Router {
 	router := mux.NewRouter()
 
 	// API routes
@@ -157,6 +159,28 @@ func setupRouter(apiHandler *handlers.APIHandler, orderHandler *handlers.OrderHa
 	api.HandleFunc("/edges/{edgeId}", edgeHandler.UpdateEdge).Methods("PUT")
 	api.HandleFunc("/edges/{edgeId}", edgeHandler.DeleteEdge).Methods("DELETE")
 	api.HandleFunc("/edges/by-edge-id/{edgeId}", edgeHandler.GetEdgeByEdgeID).Methods("GET")
+
+	// Action Template Management (Independent)
+	api.HandleFunc("/actions", actionHandler.CreateActionTemplate).Methods("POST")
+	api.HandleFunc("/actions", actionHandler.ListActionTemplates).Methods("GET")
+	api.HandleFunc("/actions/{actionId}", actionHandler.GetActionTemplate).Methods("GET")
+	api.HandleFunc("/actions/{actionId}", actionHandler.UpdateActionTemplate).Methods("PUT")
+	api.HandleFunc("/actions/{actionId}", actionHandler.DeleteActionTemplate).Methods("DELETE")
+	api.HandleFunc("/actions/by-action-id/{actionId}", actionHandler.GetActionTemplateByActionID).Methods("GET")
+	api.HandleFunc("/actions/{actionId}/clone", actionHandler.CloneActionTemplate).Methods("POST")
+
+	// Action Library Management
+	api.HandleFunc("/actions/library", actionHandler.CreateActionLibrary).Methods("POST")
+	api.HandleFunc("/actions/library", actionHandler.GetActionLibrary).Methods("GET")
+
+	// Action Validation and Bulk Operations
+	api.HandleFunc("/actions/validate", actionHandler.ValidateActionTemplate).Methods("POST")
+	api.HandleFunc("/actions/bulk/delete", actionHandler.BulkDeleteActionTemplates).Methods("POST")
+	api.HandleFunc("/actions/bulk/clone", actionHandler.BulkCloneActionTemplates).Methods("POST")
+
+	// Action Import/Export
+	api.HandleFunc("/actions/export", actionHandler.ExportActionTemplates).Methods("POST")
+	api.HandleFunc("/actions/import", actionHandler.ImportActionTemplates).Methods("POST")
 
 	// Add CORS middleware
 	router.Use(corsMiddleware)
