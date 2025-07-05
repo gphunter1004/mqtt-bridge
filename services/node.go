@@ -248,8 +248,6 @@ func (ns *NodeService) createActionTemplate(tx *gorm.DB, actionReq *models.Actio
 	nodeID *uint, edgeID *uint) error {
 
 	action := &models.ActionTemplate{
-		NodeTemplateID:    nodeID,
-		EdgeTemplateID:    edgeID,
 		ActionType:        actionReq.ActionType,
 		ActionID:          actionReq.ActionID,
 		BlockingType:      actionReq.BlockingType,

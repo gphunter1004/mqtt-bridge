@@ -33,7 +33,7 @@ type NodeTemplate struct {
 
 	CreatedAt time.Time        `json:"createdAt"`
 	UpdatedAt time.Time        `json:"updatedAt"`
-	Actions   []ActionTemplate `gorm:"foreignKey:NodeTemplateID" json:"actions"`
+	Actions   []ActionTemplate `json:"actions"`
 }
 
 // Independent Edge Model
@@ -48,7 +48,7 @@ type EdgeTemplate struct {
 	EndNodeID   string           `json:"endNodeId"`
 	CreatedAt   time.Time        `json:"createdAt"`
 	UpdatedAt   time.Time        `json:"updatedAt"`
-	Actions     []ActionTemplate `gorm:"foreignKey:EdgeTemplateID" json:"actions"`
+	Actions     []ActionTemplate `json:"actions"`
 }
 
 // Order Template Association Tables (Many-to-Many)
@@ -70,8 +70,6 @@ type OrderTemplateEdge struct {
 
 type ActionTemplate struct {
 	ID                uint                      `gorm:"primaryKey" json:"id"`
-	NodeTemplateID    *uint                     `gorm:"index" json:"nodeTemplateId,omitempty"`
-	EdgeTemplateID    *uint                     `gorm:"index" json:"edgeTemplateId,omitempty"`
 	ActionType        string                    `gorm:"not null" json:"actionType"`
 	ActionID          string                    `json:"actionId"`
 	BlockingType      string                    `json:"blockingType"`
