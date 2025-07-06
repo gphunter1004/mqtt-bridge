@@ -230,6 +230,93 @@ func (bs *BridgeService) CreateInferenceOrder(serialNumber, inferenceName string
 	return bs.SendOrderToRobot(serialNumber, orderData)
 }
 
+// CreateInferenceOrderWithPosition creates an inference order with custom position
+func (bs *BridgeService) CreateInferenceOrderWithPosition(serialNumber, inferenceName string, position models.NodePosition) error {
+	orderID := bs.generateUniqueID()
+	nodeID := bs.generateUniqueID()
+	actionID := bs.generateUniqueID()
+
+	orderData := OrderRequest{
+		OrderID:       orderID,
+		OrderUpdateID: 0,
+		Nodes: []models.Node{
+			{
+				NodeID:       nodeID,
+				Description:  "Inference Task at Custom Position",
+				SequenceID:   0,
+				Released:     true,
+				NodePosition: position,
+				Actions: []models.Action{
+					{
+						ActionType:        "Roboligent Robin - Inference",
+						ActionID:          actionID,
+						ActionDescription: "This is an action will trigger the behavior tree for executing inference.",
+						BlockingType:      "NONE",
+						ActionParameters: []models.ActionParameter{
+							{
+								Key:   "inference_name",
+								Value: inferenceName,
+							},
+						},
+					},
+				},
+			},
+		},
+		Edges: []models.Edge{},
+	}
+
+	return bs.SendOrderToRobot(serialNumber, orderData)
+}
+
+// CreateCustomInferenceOrder creates a fully customizable inference order
+func (bs *BridgeService) CreateCustomInferenceOrder(req *CustomInferenceOrderRequest) error {
+	orderID := bs.generateUniqueID()
+	nodeID := bs.generateUniqueID()
+	actionID := bs.generateUniqueID()
+
+	// Build action parameters
+	actionParams := []models.ActionParameter{
+		{
+			Key:   "inference_name",
+			Value: req.InferenceName,
+		},
+	}
+
+	// Add custom parameters
+	for key, value := range req.CustomParameters {
+		actionParams = append(actionParams, models.ActionParameter{
+			Key:   key,
+			Value: value,
+		})
+	}
+
+	orderData := OrderRequest{
+		OrderID:       orderID,
+		OrderUpdateID: 0,
+		Nodes: []models.Node{
+			{
+				NodeID:       nodeID,
+				Description:  req.Description,
+				SequenceID:   req.SequenceID,
+				Released:     req.Released,
+				NodePosition: req.Position,
+				Actions: []models.Action{
+					{
+						ActionType:        req.ActionType,
+						ActionID:          actionID,
+						ActionDescription: req.ActionDescription,
+						BlockingType:      req.BlockingType,
+						ActionParameters:  actionParams,
+					},
+				},
+			},
+		},
+		Edges: req.Edges,
+	}
+
+	return bs.SendOrderToRobot(req.SerialNumber, orderData)
+}
+
 // CreateTrajectoryOrder creates an order with a trajectory action
 func (bs *BridgeService) CreateTrajectoryOrder(serialNumber, trajectoryName, arm string) error {
 	orderID := bs.generateUniqueID()
@@ -277,6 +364,142 @@ func (bs *BridgeService) CreateTrajectoryOrder(serialNumber, trajectoryName, arm
 	}
 
 	return bs.SendOrderToRobot(serialNumber, orderData)
+}
+
+// CreateTrajectoryOrderWithPosition creates a trajectory order with custom position
+func (bs *BridgeService) CreateTrajectoryOrderWithPosition(serialNumber, trajectoryName, arm string, position models.NodePosition) error {
+	orderID := bs.generateUniqueID()
+	nodeID := bs.generateUniqueID()
+	actionID := bs.generateUniqueID()
+
+	orderData := OrderRequest{
+		OrderID:       orderID,
+		OrderUpdateID: 0,
+		Nodes: []models.Node{
+			{
+				NodeID:       nodeID,
+				Description:  "Trajectory Task at Custom Position",
+				SequenceID:   0,
+				Released:     true,
+				NodePosition: position,
+				Actions: []models.Action{
+					{
+						ActionType:        "Roboligent Robin - Follow Trajectory",
+						ActionID:          actionID,
+						ActionDescription: "This action will trigger the behavior tree for following a recorded trajectory.",
+						BlockingType:      "NONE",
+						ActionParameters: []models.ActionParameter{
+							{
+								Key:   "trajectory_name",
+								Value: trajectoryName,
+							},
+							{
+								Key:   "arm",
+								Value: arm,
+							},
+						},
+					},
+				},
+			},
+		},
+		Edges: []models.Edge{},
+	}
+
+	return bs.SendOrderToRobot(serialNumber, orderData)
+}
+
+// CreateCustomTrajectoryOrder creates a fully customizable trajectory order
+func (bs *BridgeService) CreateCustomTrajectoryOrder(req *CustomTrajectoryOrderRequest) error {
+	orderID := bs.generateUniqueID()
+	nodeID := bs.generateUniqueID()
+	actionID := bs.generateUniqueID()
+
+	// Build action parameters
+	actionParams := []models.ActionParameter{
+		{
+			Key:   "trajectory_name",
+			Value: req.TrajectoryName,
+		},
+		{
+			Key:   "arm",
+			Value: req.Arm,
+		},
+	}
+
+	// Add custom parameters
+	for key, value := range req.CustomParameters {
+		actionParams = append(actionParams, models.ActionParameter{
+			Key:   key,
+			Value: value,
+		})
+	}
+
+	orderData := OrderRequest{
+		OrderID:       orderID,
+		OrderUpdateID: 0,
+		Nodes: []models.Node{
+			{
+				NodeID:       nodeID,
+				Description:  req.Description,
+				SequenceID:   req.SequenceID,
+				Released:     req.Released,
+				NodePosition: req.Position,
+				Actions: []models.Action{
+					{
+						ActionType:        req.ActionType,
+						ActionID:          actionID,
+						ActionDescription: req.ActionDescription,
+						BlockingType:      req.BlockingType,
+						ActionParameters:  actionParams,
+					},
+				},
+			},
+		},
+		Edges: req.Edges,
+	}
+
+	return bs.SendOrderToRobot(req.SerialNumber, orderData)
+}
+
+// CreateDynamicOrder creates a completely flexible order from scratch
+func (bs *BridgeService) CreateDynamicOrder(req *DynamicOrderRequest) error {
+	// Generate unique order ID
+	orderID := bs.generateUniqueID()
+
+	// Process nodes and generate unique IDs if needed
+	for i := range req.Nodes {
+		if req.Nodes[i].NodeID == "" {
+			req.Nodes[i].NodeID = bs.generateUniqueID()
+		}
+		// Generate action IDs if not provided
+		for j := range req.Nodes[i].Actions {
+			if req.Nodes[i].Actions[j].ActionID == "" {
+				req.Nodes[i].Actions[j].ActionID = bs.generateUniqueID()
+			}
+		}
+	}
+
+	// Process edges and generate unique IDs if needed
+	for i := range req.Edges {
+		if req.Edges[i].EdgeID == "" {
+			req.Edges[i].EdgeID = bs.generateUniqueID()
+		}
+		// Generate action IDs if not provided
+		for j := range req.Edges[i].Actions {
+			if req.Edges[i].Actions[j].ActionID == "" {
+				req.Edges[i].Actions[j].ActionID = bs.generateUniqueID()
+			}
+		}
+	}
+
+	orderData := OrderRequest{
+		OrderID:       orderID,
+		OrderUpdateID: req.OrderUpdateID,
+		Nodes:         req.Nodes,
+		Edges:         req.Edges,
+	}
+
+	return bs.SendOrderToRobot(req.SerialNumber, orderData)
 }
 
 // generateUniqueID generates a unique ID for orders, nodes, and actions
@@ -344,4 +567,42 @@ type RobotHealthStatus struct {
 	IsPaused            bool      `json:"isPaused"`
 	IsDriving           bool      `json:"isDriving"`
 	LastUpdate          time.Time `json:"lastUpdate"`
+}
+
+// Custom order request structures for flexible order creation
+
+type CustomInferenceOrderRequest struct {
+	SerialNumber      string                 `json:"serialNumber"`
+	InferenceName     string                 `json:"inferenceName"`
+	Description       string                 `json:"description"`
+	SequenceID        int                    `json:"sequenceId"`
+	Released          bool                   `json:"released"`
+	Position          models.NodePosition    `json:"position"`
+	ActionType        string                 `json:"actionType"`
+	ActionDescription string                 `json:"actionDescription"`
+	BlockingType      string                 `json:"blockingType"`
+	CustomParameters  map[string]interface{} `json:"customParameters"`
+	Edges             []models.Edge          `json:"edges"`
+}
+
+type CustomTrajectoryOrderRequest struct {
+	SerialNumber      string                 `json:"serialNumber"`
+	TrajectoryName    string                 `json:"trajectoryName"`
+	Arm               string                 `json:"arm"`
+	Description       string                 `json:"description"`
+	SequenceID        int                    `json:"sequenceId"`
+	Released          bool                   `json:"released"`
+	Position          models.NodePosition    `json:"position"`
+	ActionType        string                 `json:"actionType"`
+	ActionDescription string                 `json:"actionDescription"`
+	BlockingType      string                 `json:"blockingType"`
+	CustomParameters  map[string]interface{} `json:"customParameters"`
+	Edges             []models.Edge          `json:"edges"`
+}
+
+type DynamicOrderRequest struct {
+	SerialNumber  string        `json:"serialNumber"`
+	OrderUpdateID int           `json:"orderUpdateId"`
+	Nodes         []models.Node `json:"nodes"`
+	Edges         []models.Edge `json:"edges"`
 }

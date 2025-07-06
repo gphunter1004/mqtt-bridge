@@ -116,11 +116,22 @@ func setupRouter(apiHandler *handlers.APIHandler, orderHandler *handlers.OrderHa
 	api.HandleFunc("/robots/{serialNumber}/capabilities", apiHandler.GetRobotCapabilities).Methods("GET")
 	api.HandleFunc("/robots/{serialNumber}/history", apiHandler.GetRobotConnectionHistory).Methods("GET")
 
-	// Robot control endpoints
+	// Robot control endpoints - Basic
 	api.HandleFunc("/robots/{serialNumber}/order", apiHandler.SendOrder).Methods("POST")
 	api.HandleFunc("/robots/{serialNumber}/action", apiHandler.SendCustomAction).Methods("POST")
+
+	// Robot control endpoints - Simple convenience methods
 	api.HandleFunc("/robots/{serialNumber}/inference", apiHandler.SendInferenceOrder).Methods("POST")
 	api.HandleFunc("/robots/{serialNumber}/trajectory", apiHandler.SendTrajectoryOrder).Methods("POST")
+
+	// Robot control endpoints - Enhanced with position
+	api.HandleFunc("/robots/{serialNumber}/inference/with-position", apiHandler.SendInferenceOrderWithPosition).Methods("POST")
+	api.HandleFunc("/robots/{serialNumber}/trajectory/with-position", apiHandler.SendTrajectoryOrderWithPosition).Methods("POST")
+
+	// Robot control endpoints - Fully customizable
+	api.HandleFunc("/robots/{serialNumber}/inference/custom", apiHandler.SendCustomInferenceOrder).Methods("POST")
+	api.HandleFunc("/robots/{serialNumber}/trajectory/custom", apiHandler.SendCustomTrajectoryOrder).Methods("POST")
+	api.HandleFunc("/robots/{serialNumber}/order/dynamic", apiHandler.SendDynamicOrder).Methods("POST")
 
 	// Order Template Management
 	api.HandleFunc("/order-templates", orderHandler.CreateOrderTemplate).Methods("POST")
