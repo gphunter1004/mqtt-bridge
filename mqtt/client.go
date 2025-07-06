@@ -66,6 +66,11 @@ func NewClient(cfg *config.Config, db *database.Database, redisClient *redis.Red
 	return mqttClient, nil
 }
 
+// GetClient returns the underlying MQTT client ⭐ NEW
+func (c *Client) GetClient() mqtt.Client {
+	return c.client
+}
+
 func (c *Client) onConnect(client mqtt.Client) {
 	log.Println("====================================")
 	log.Println("[MQTT] MQTT client connected successfully")
@@ -398,6 +403,8 @@ func (c *Client) sendInitPosition(serialNumber, manufacturer string) {
 		log.Printf("[MQTT SUCCESS] InitPosition command sent successfully to robot: %s", serialNumber)
 	}
 }
+
+// Legacy methods for backward compatibility
 
 func (c *Client) SendOrder(serialNumber string, orderMsg *models.OrderMessage) error {
 	// Use manufacturer from the order message

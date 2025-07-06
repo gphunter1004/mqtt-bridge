@@ -7,6 +7,7 @@ import (
 
 	"mqtt-bridge/models"
 	"mqtt-bridge/services"
+	"mqtt-bridge/transport"
 	"mqtt-bridge/utils"
 
 	"github.com/gorilla/mux"
@@ -23,10 +24,9 @@ func NewAPIHandler(bridgeService *services.BridgeService) *APIHandler {
 }
 
 // ===================================================================
-// BASIC ROBOT MANAGEMENT
+// BASIC ROBOT MANAGEMENT (기존 메소드들 - 변경 없음)
 // ===================================================================
 
-// GetRobotState returns the current state of a robot
 func (h *APIHandler) GetRobotState(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	serialNumber := vars["serialNumber"]
@@ -45,7 +45,6 @@ func (h *APIHandler) GetRobotState(w http.ResponseWriter, r *http.Request) {
 	h.writeSuccessResponse(w, state)
 }
 
-// GetRobotConnectionHistory returns the connection history of a robot
 func (h *APIHandler) GetRobotConnectionHistory(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	serialNumber := vars["serialNumber"]
@@ -55,11 +54,10 @@ func (h *APIHandler) GetRobotConnectionHistory(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Get pagination parameters using common helpers
 	pagination := utils.GetPaginationParams(
 		r.URL.Query().Get("limit"),
 		r.URL.Query().Get("offset"),
-		10, // default limit
+		10,
 	)
 
 	history, err := h.bridgeService.GetRobotConnectionHistory(serialNumber, pagination.Limit)
@@ -68,12 +66,10 @@ func (h *APIHandler) GetRobotConnectionHistory(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Create list response using common helpers
 	response := utils.CreateListResponse(history, len(history), &pagination)
 	h.writeSuccessResponse(w, response)
 }
 
-// GetRobotCapabilities returns the capabilities of a robot
 func (h *APIHandler) GetRobotCapabilities(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	serialNumber := vars["serialNumber"]
@@ -92,7 +88,6 @@ func (h *APIHandler) GetRobotCapabilities(w http.ResponseWriter, r *http.Request
 	h.writeSuccessResponse(w, capabilities)
 }
 
-// GetConnectedRobots returns a list of currently connected robots
 func (h *APIHandler) GetConnectedRobots(w http.ResponseWriter, r *http.Request) {
 	robots, err := h.bridgeService.GetConnectedRobots()
 	if err != nil {
@@ -108,7 +103,6 @@ func (h *APIHandler) GetConnectedRobots(w http.ResponseWriter, r *http.Request) 
 	h.writeSuccessResponse(w, response)
 }
 
-// GetRobotHealth returns the health status of a robot
 func (h *APIHandler) GetRobotHealth(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	serialNumber := vars["serialNumber"]
@@ -127,7 +121,6 @@ func (h *APIHandler) GetRobotHealth(w http.ResponseWriter, r *http.Request) {
 	h.writeSuccessResponse(w, health)
 }
 
-// HealthCheck endpoint for service health
 func (h *APIHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 	response := map[string]interface{}{
 		"status":    "healthy",
@@ -139,10 +132,9 @@ func (h *APIHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 // ===================================================================
-// BASIC ORDER AND ACTION METHODS
+// BASIC ORDER AND ACTION METHODS (기존 메소드들 - MQTT 전용)
 // ===================================================================
 
-// SendOrder sends an order to a robot
 func (h *APIHandler) SendOrder(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	serialNumber := vars["serialNumber"]
@@ -166,12 +158,14 @@ func (h *APIHandler) SendOrder(w http.ResponseWriter, r *http.Request) {
 
 	response := utils.SuccessResponse(
 		fmt.Sprintf("Order sent successfully to robot %s", serialNumber),
-		map[string]string{"orderId": orderRequest.OrderID},
+		map[string]interface{}{
+			"orderId":   orderRequest.OrderID,
+			"transport": "mqtt",
+		},
 	)
 	h.writeSuccessResponse(w, response)
 }
 
-// SendCustomAction sends a custom action to a robot
 func (h *APIHandler) SendCustomAction(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	serialNumber := vars["serialNumber"]
@@ -195,24 +189,190 @@ func (h *APIHandler) SendCustomAction(w http.ResponseWriter, r *http.Request) {
 
 	response := utils.SuccessResponse(
 		fmt.Sprintf("Custom action sent successfully to robot %s", serialNumber),
-		map[string]string{"actionId": utils.GenerateActionID()},
+		map[string]interface{}{
+			"actionId":  utils.GenerateActionID(),
+			"transport": "mqtt",
+		},
 	)
 	h.writeSuccessResponse(w, response)
 }
 
 // ===================================================================
-// ENHANCED ROBOT CONTROL APIs
+// NEW TRANSPORT-AWARE ORDER METHODS ⭐ NEW
 // ===================================================================
 
-// SendInferenceOrder sends an inference order to a robot (Basic)
-func (h *APIHandler) SendInferenceOrder(w http.ResponseWriter, r *http.Request) {
+// SendOrderWithTransport - Transport 선택 가능한 주문 전송
+// SendOrderWithTransport - Transport 선택 가능한 주문 전송
+func (h *APIHandler) SendOrderWithTransport(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	serialNumber := vars["serialNumber"]
 
-	if serialNumber == "" {
-		h.writeErrorResponse(w, "Serial number is required", http.StatusBadRequest)
+	transportStr := r.URL.Query().Get("transport")
+	var transportType transport.TransportType = transport.TransportTypeMQTT // 기본값
+
+	switch transportStr {
+	case "http":
+		transportType = transport.TransportTypeHTTP
+	case "websocket":
+		transportType = transport.TransportTypeWebSocket
+	case "mqtt":
+		transportType = transport.TransportTypeMQTT
+	}
+
+	var orderRequest services.OrderRequest
+	if err := json.NewDecoder(r.Body).Decode(&orderRequest); err != nil {
+		h.writeErrorResponse(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
 		return
 	}
+
+	err := h.bridgeService.SendOrderToRobotWithTransport(serialNumber, orderRequest, transportType)
+	if err != nil {
+		h.writeErrorResponse(w, fmt.Sprintf("Failed to send order: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"status":    "success",
+		"message":   fmt.Sprintf("Order sent via %s to robot %s", transportType, serialNumber),
+		"transport": transportType,
+		"orderId":   orderRequest.OrderID,
+	}
+
+	h.writeSuccessResponse(w, response)
+}
+
+// SendOrderViaHTTP - HTTP 전용 주문 전송
+func (h *APIHandler) SendOrderViaHTTP(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	serialNumber := vars["serialNumber"]
+
+	var orderRequest services.OrderRequest
+	if err := json.NewDecoder(r.Body).Decode(&orderRequest); err != nil {
+		h.writeErrorResponse(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	err := h.bridgeService.SendOrderToRobotViaHTTP(serialNumber, orderRequest)
+	if err != nil {
+		h.writeErrorResponse(w, fmt.Sprintf("Failed to send order via HTTP: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"status":    "success",
+		"message":   fmt.Sprintf("Order sent via HTTP REST API to robot %s", serialNumber),
+		"transport": "http",
+		"orderId":   orderRequest.OrderID,
+	}
+
+	h.writeSuccessResponse(w, response)
+}
+
+// SendOrderViaWebSocket - WebSocket 전용 주문 전송
+func (h *APIHandler) SendOrderViaWebSocket(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	serialNumber := vars["serialNumber"]
+
+	var orderRequest services.OrderRequest
+	if err := json.NewDecoder(r.Body).Decode(&orderRequest); err != nil {
+		h.writeErrorResponse(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	err := h.bridgeService.SendOrderToRobotViaWebSocket(serialNumber, orderRequest)
+	if err != nil {
+		h.writeErrorResponse(w, fmt.Sprintf("Failed to send order via WebSocket: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"status":    "success",
+		"message":   fmt.Sprintf("Order sent via WebSocket to robot %s", serialNumber),
+		"transport": "websocket",
+		"orderId":   orderRequest.OrderID,
+	}
+
+	h.writeSuccessResponse(w, response)
+}
+
+// ===================================================================
+// NEW TRANSPORT-AWARE CUSTOM ACTION METHODS ⭐ NEW
+// ===================================================================
+
+// SendCustomActionWithTransport - Transport 선택 가능한 Custom Action
+func (h *APIHandler) SendCustomActionWithTransport(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	serialNumber := vars["serialNumber"]
+
+	transportStr := r.URL.Query().Get("transport")
+	var transportType transport.TransportType = transport.TransportTypeMQTT
+
+	switch transportStr {
+	case "http":
+		transportType = transport.TransportTypeHTTP
+	case "websocket":
+		transportType = transport.TransportTypeWebSocket
+	case "mqtt":
+		transportType = transport.TransportTypeMQTT
+	}
+
+	var actionRequest services.CustomActionRequest
+	if err := json.NewDecoder(r.Body).Decode(&actionRequest); err != nil {
+		h.writeErrorResponse(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	err := h.bridgeService.SendCustomActionWithTransport(serialNumber, actionRequest, transportType)
+	if err != nil {
+		h.writeErrorResponse(w, fmt.Sprintf("Failed to send custom action: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"status":        "success",
+		"message":       fmt.Sprintf("Custom action sent via %s to robot %s", transportType, serialNumber),
+		"transport":     transportType,
+		"actions_count": len(actionRequest.Actions),
+	}
+
+	h.writeSuccessResponse(w, response)
+}
+
+// SendCustomActionViaHTTP - HTTP 전용 Custom Action
+func (h *APIHandler) SendCustomActionViaHTTP(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	serialNumber := vars["serialNumber"]
+
+	var actionRequest services.CustomActionRequest
+	if err := json.NewDecoder(r.Body).Decode(&actionRequest); err != nil {
+		h.writeErrorResponse(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	err := h.bridgeService.SendCustomActionViaHTTP(serialNumber, actionRequest)
+	if err != nil {
+		h.writeErrorResponse(w, fmt.Sprintf("Failed to send custom action via HTTP: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"status":        "success",
+		"message":       fmt.Sprintf("Custom action sent via HTTP REST API to robot %s", serialNumber),
+		"transport":     "http",
+		"actions_count": len(actionRequest.Actions),
+	}
+
+	h.writeSuccessResponse(w, response)
+}
+
+// ===================================================================
+// ENHANCED ROBOT CONTROL APIs WITH TRANSPORT SUPPORT ⭐ NEW
+// ===================================================================
+
+// SendInferenceOrder - 기존 추론 실행 (MQTT 전용)
+func (h *APIHandler) SendInferenceOrder(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	serialNumber := vars["serialNumber"]
 
 	var request struct {
 		InferenceName string `json:"inferenceName"`
@@ -223,7 +383,6 @@ func (h *APIHandler) SendInferenceOrder(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Validate using common helpers
 	if err := utils.ValidateRequired(map[string]string{
 		"inferenceName": request.InferenceName,
 	}); err != nil {
@@ -243,20 +402,65 @@ func (h *APIHandler) SendInferenceOrder(w http.ResponseWriter, r *http.Request) 
 			"action":         "inference",
 			"inference_name": request.InferenceName,
 			"order_id":       utils.GenerateOrderID(),
+			"transport":      "mqtt",
 		},
 	)
 	h.writeSuccessResponse(w, response)
 }
 
-// SendTrajectoryOrder sends a trajectory order to a robot (Basic)
-func (h *APIHandler) SendTrajectoryOrder(w http.ResponseWriter, r *http.Request) {
+// SendInferenceOrderWithTransport - Transport 선택 가능한 추론 실행 ⭐ NEW
+func (h *APIHandler) SendInferenceOrderWithTransport(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	serialNumber := vars["serialNumber"]
 
-	if serialNumber == "" {
-		h.writeErrorResponse(w, "Serial number is required", http.StatusBadRequest)
+	transportStr := r.URL.Query().Get("transport")
+	var transportType transport.TransportType = transport.TransportTypeMQTT
+
+	switch transportStr {
+	case "http":
+		transportType = transport.TransportTypeHTTP
+	case "websocket":
+		transportType = transport.TransportTypeWebSocket
+	}
+
+	var request struct {
+		InferenceName string `json:"inferenceName"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		h.writeErrorResponse(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
 		return
 	}
+
+	if err := utils.ValidateRequired(map[string]string{
+		"inferenceName": request.InferenceName,
+	}); err != nil {
+		h.writeErrorResponse(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	err := h.bridgeService.CreateInferenceOrderWithTransport(serialNumber, request.InferenceName, transportType)
+	if err != nil {
+		h.writeErrorResponse(w, fmt.Sprintf("Failed to send inference order: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"status":         "success",
+		"message":        fmt.Sprintf("Inference order sent via %s to robot %s", transportType, serialNumber),
+		"transport":      transportType,
+		"action":         "inference",
+		"inference_name": request.InferenceName,
+		"order_id":       utils.GenerateOrderID(),
+	}
+
+	h.writeSuccessResponse(w, response)
+}
+
+// SendTrajectoryOrder - 기존 궤적 실행 (MQTT 전용)
+func (h *APIHandler) SendTrajectoryOrder(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	serialNumber := vars["serialNumber"]
 
 	var request struct {
 		TrajectoryName string `json:"trajectoryName"`
@@ -268,7 +472,6 @@ func (h *APIHandler) SendTrajectoryOrder(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Validate using common helpers
 	if err := utils.ValidateRequired(map[string]string{
 		"trajectoryName": request.TrajectoryName,
 		"arm":            request.Arm,
@@ -290,20 +493,72 @@ func (h *APIHandler) SendTrajectoryOrder(w http.ResponseWriter, r *http.Request)
 			"trajectory_name": request.TrajectoryName,
 			"arm":             request.Arm,
 			"order_id":        utils.GenerateOrderID(),
+			"transport":       "mqtt",
 		},
 	)
 	h.writeSuccessResponse(w, response)
 }
 
-// SendInferenceOrderWithPosition sends an inference order with custom position
-func (h *APIHandler) SendInferenceOrderWithPosition(w http.ResponseWriter, r *http.Request) {
+// SendTrajectoryOrderWithTransport - Transport 선택 가능한 궤적 실행 ⭐ NEW
+func (h *APIHandler) SendTrajectoryOrderWithTransport(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	serialNumber := vars["serialNumber"]
 
-	if serialNumber == "" {
-		h.writeErrorResponse(w, "Serial number is required", http.StatusBadRequest)
+	transportStr := r.URL.Query().Get("transport")
+	var transportType transport.TransportType = transport.TransportTypeMQTT
+
+	switch transportStr {
+	case "http":
+		transportType = transport.TransportTypeHTTP
+	case "websocket":
+		transportType = transport.TransportTypeWebSocket
+	}
+
+	var request struct {
+		TrajectoryName string `json:"trajectoryName"`
+		Arm            string `json:"arm"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		h.writeErrorResponse(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
 		return
 	}
+
+	if err := utils.ValidateRequired(map[string]string{
+		"trajectoryName": request.TrajectoryName,
+		"arm":            request.Arm,
+	}); err != nil {
+		h.writeErrorResponse(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	err := h.bridgeService.CreateTrajectoryOrderWithTransport(serialNumber, request.TrajectoryName, request.Arm, transportType)
+	if err != nil {
+		h.writeErrorResponse(w, fmt.Sprintf("Failed to send trajectory order: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"status":          "success",
+		"message":         fmt.Sprintf("Trajectory order sent via %s to robot %s", transportType, serialNumber),
+		"transport":       transportType,
+		"action":          "trajectory",
+		"trajectory_name": request.TrajectoryName,
+		"arm":             request.Arm,
+		"order_id":        utils.GenerateOrderID(),
+	}
+
+	h.writeSuccessResponse(w, response)
+}
+
+// ===================================================================
+// ENHANCED APIS WITH POSITION SUPPORT ⭐ NEW
+// ===================================================================
+
+// SendInferenceOrderWithPosition - 위치 지정 추론 실행
+func (h *APIHandler) SendInferenceOrderWithPosition(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	serialNumber := vars["serialNumber"]
 
 	var request struct {
 		InferenceName string              `json:"inferenceName"`
@@ -315,7 +570,6 @@ func (h *APIHandler) SendInferenceOrderWithPosition(w http.ResponseWriter, r *ht
 		return
 	}
 
-	// Validate using common helpers
 	if err := utils.ValidateRequired(map[string]string{
 		"inferenceName": request.InferenceName,
 	}); err != nil {
@@ -341,15 +595,10 @@ func (h *APIHandler) SendInferenceOrderWithPosition(w http.ResponseWriter, r *ht
 	h.writeSuccessResponse(w, response)
 }
 
-// SendTrajectoryOrderWithPosition sends a trajectory order with custom position
+// SendTrajectoryOrderWithPosition - 위치 지정 궤적 실행
 func (h *APIHandler) SendTrajectoryOrderWithPosition(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	serialNumber := vars["serialNumber"]
-
-	if serialNumber == "" {
-		h.writeErrorResponse(w, "Serial number is required", http.StatusBadRequest)
-		return
-	}
 
 	var request struct {
 		TrajectoryName string              `json:"trajectoryName"`
@@ -362,7 +611,6 @@ func (h *APIHandler) SendTrajectoryOrderWithPosition(w http.ResponseWriter, r *h
 		return
 	}
 
-	// Validate using common helpers
 	if err := utils.ValidateRequired(map[string]string{
 		"trajectoryName": request.TrajectoryName,
 		"arm":            request.Arm,
@@ -390,15 +638,14 @@ func (h *APIHandler) SendTrajectoryOrderWithPosition(w http.ResponseWriter, r *h
 	h.writeSuccessResponse(w, response)
 }
 
-// SendCustomInferenceOrder sends a fully customizable inference order
+// ===================================================================
+// CUSTOM INFERENCE/TRAJECTORY ORDERS ⭐ NEW
+// ===================================================================
+
+// SendCustomInferenceOrder - 완전 커스터마이징 추론 주문
 func (h *APIHandler) SendCustomInferenceOrder(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	serialNumber := vars["serialNumber"]
-
-	if serialNumber == "" {
-		h.writeErrorResponse(w, "Serial number is required", http.StatusBadRequest)
-		return
-	}
 
 	var request services.CustomInferenceOrderRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -406,10 +653,8 @@ func (h *APIHandler) SendCustomInferenceOrder(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Set the serial number from URL
 	request.SerialNumber = serialNumber
 
-	// Validate using common helpers
 	if err := utils.ValidateRequired(map[string]string{
 		"inferenceName": request.InferenceName,
 	}); err != nil {
@@ -436,15 +681,10 @@ func (h *APIHandler) SendCustomInferenceOrder(w http.ResponseWriter, r *http.Req
 	h.writeSuccessResponse(w, response)
 }
 
-// SendCustomTrajectoryOrder sends a fully customizable trajectory order
+// SendCustomTrajectoryOrder - 완전 커스터마이징 궤적 주문
 func (h *APIHandler) SendCustomTrajectoryOrder(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	serialNumber := vars["serialNumber"]
-
-	if serialNumber == "" {
-		h.writeErrorResponse(w, "Serial number is required", http.StatusBadRequest)
-		return
-	}
 
 	var request services.CustomTrajectoryOrderRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -452,10 +692,8 @@ func (h *APIHandler) SendCustomTrajectoryOrder(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Set the serial number from URL
 	request.SerialNumber = serialNumber
 
-	// Validate using common helpers
 	if err := utils.ValidateRequired(map[string]string{
 		"trajectoryName": request.TrajectoryName,
 		"arm":            request.Arm,
@@ -484,15 +722,10 @@ func (h *APIHandler) SendCustomTrajectoryOrder(w http.ResponseWriter, r *http.Re
 	h.writeSuccessResponse(w, response)
 }
 
-// SendDynamicOrder sends a completely flexible order from scratch
+// SendDynamicOrder - 완전히 자유로운 다중 노드/엣지 워크플로우
 func (h *APIHandler) SendDynamicOrder(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	serialNumber := vars["serialNumber"]
-
-	if serialNumber == "" {
-		h.writeErrorResponse(w, "Serial number is required", http.StatusBadRequest)
-		return
-	}
 
 	var request services.DynamicOrderRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -500,7 +733,6 @@ func (h *APIHandler) SendDynamicOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set the serial number from URL
 	request.SerialNumber = serialNumber
 
 	if len(request.Nodes) == 0 {
@@ -528,17 +760,87 @@ func (h *APIHandler) SendDynamicOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 // ===================================================================
+// TRANSPORT MANAGEMENT APIs ⭐ NEW
+// ===================================================================
+
+// GetAvailableTransports - 사용 가능한 Transport 목록 조회
+func (h *APIHandler) GetAvailableTransports(w http.ResponseWriter, r *http.Request) {
+	transports := h.bridgeService.GetAvailableTransports()
+
+	response := map[string]interface{}{
+		"available_transports": transports,
+		"count":                len(transports),
+		"description": map[string]string{
+			"mqtt":      "MQTT messaging protocol (default)",
+			"http":      "HTTP REST API calls",
+			"websocket": "WebSocket real-time communication",
+		},
+	}
+
+	h.writeSuccessResponse(w, response)
+}
+
+// GetDefaultTransport - 기본 Transport 조회
+func (h *APIHandler) GetDefaultTransport(w http.ResponseWriter, r *http.Request) {
+	defaultTransport := h.bridgeService.GetDefaultTransport()
+
+	response := map[string]interface{}{
+		"default_transport": defaultTransport,
+		"description":       "Current default transport for robot communication",
+	}
+
+	h.writeSuccessResponse(w, response)
+}
+
+// SetDefaultTransport - 기본 Transport 설정
+func (h *APIHandler) SetDefaultTransport(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Transport string `json:"transport"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		h.writeErrorResponse(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	var transportType transport.TransportType
+	switch request.Transport {
+	case "mqtt":
+		transportType = transport.TransportTypeMQTT
+	case "http":
+		transportType = transport.TransportTypeHTTP
+	case "websocket":
+		transportType = transport.TransportTypeWebSocket
+	default:
+		h.writeErrorResponse(w, "Invalid transport type. Available: mqtt, http, websocket", http.StatusBadRequest)
+		return
+	}
+
+	err := h.bridgeService.SetDefaultTransport(transportType)
+	if err != nil {
+		h.writeErrorResponse(w, fmt.Sprintf("Failed to set default transport: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"status":            "success",
+		"message":           fmt.Sprintf("Default transport set to: %s", request.Transport),
+		"default_transport": request.Transport,
+	}
+
+	h.writeSuccessResponse(w, response)
+}
+
+// ===================================================================
 // HELPER METHODS
 // ===================================================================
 
-// writeSuccessResponse writes a JSON success response using common helpers
 func (h *APIHandler) writeSuccessResponse(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(data)
 }
 
-// writeErrorResponse writes a JSON error response using common helpers
 func (h *APIHandler) writeErrorResponse(w http.ResponseWriter, message string, statusCode int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
