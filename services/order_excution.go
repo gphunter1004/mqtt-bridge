@@ -28,6 +28,21 @@ func NewOrderExecutionService(db *database.Database, redisClient *redis.RedisCli
 	}
 }
 
+// GetRobotManufacturer retrieves the manufacturer from the database or defaults to "Roboligent"
+func (oes *OrderExecutionService) GetRobotManufacturer(serialNumber string) string {
+	var connectionState models.ConnectionState
+	err := oes.db.DB.Where("serial_number = ?", serialNumber).
+		Order("created_at desc").
+		First(&connectionState).Error
+
+	if err == nil && connectionState.Manufacturer != "" {
+		return connectionState.Manufacturer
+	}
+
+	// Default manufacturer if not found in database
+	return "Roboligent"
+}
+
 // Order Execution
 
 func (oes *OrderExecutionService) ExecuteOrder(req *models.ExecuteOrderRequest) (*models.OrderExecutionResponse, error) {
@@ -95,37 +110,54 @@ func (oes *OrderExecutionService) ExecuteOrder(req *models.ExecuteOrderRequest) 
 func (oes *OrderExecutionService) convertTemplateToOrderMessage(templateDetails *OrderTemplateWithDetails,
 	orderID, serialNumber string, paramOverrides map[string]interface{}) (*models.OrderMessage, error) {
 
-	// Convert nodes
-	nodes := make([]models.Node, len(templateDetails.Nodes))
-	for i, nodeTemplate := range templateDetails.Nodes {
-		nodes[i] = nodeTemplate.ToNode()
+	// Get robot manufacturer
+	manufacturer := oes.GetRobotManufacturer(serialNumber)
 
-		// Apply parameter overrides
-		if paramOverrides != nil {
-			for j := range nodes[i].Actions {
-				oes.applyParameterOverrides(&nodes[i].Actions[j], paramOverrides)
+	// Convert nodes with actions
+	nodes := make([]models.Node, len(templateDetails.NodesWithActions))
+	for i, nodeWithActions := range templateDetails.NodesWithActions {
+		node := nodeWithActions.NodeTemplate.ToNode()
+
+		// Convert action templates to actions
+		actions := make([]models.Action, len(nodeWithActions.Actions))
+		for j, actionTemplate := range nodeWithActions.Actions {
+			actions[j] = actionTemplate.ToAction()
+
+			// Apply parameter overrides
+			if paramOverrides != nil {
+				oes.applyParameterOverrides(&actions[j], paramOverrides)
 			}
 		}
+
+		node.Actions = actions
+		nodes[i] = node
 	}
 
-	// Convert edges
-	edges := make([]models.Edge, len(templateDetails.Edges))
-	for i, edgeTemplate := range templateDetails.Edges {
-		edges[i] = edgeTemplate.ToEdge()
+	// Convert edges with actions
+	edges := make([]models.Edge, len(templateDetails.EdgesWithActions))
+	for i, edgeWithActions := range templateDetails.EdgesWithActions {
+		edge := edgeWithActions.EdgeTemplate.ToEdge()
 
-		// Apply parameter overrides
-		if paramOverrides != nil {
-			for j := range edges[i].Actions {
-				oes.applyParameterOverrides(&edges[i].Actions[j], paramOverrides)
+		// Convert action templates to actions
+		actions := make([]models.Action, len(edgeWithActions.Actions))
+		for j, actionTemplate := range edgeWithActions.Actions {
+			actions[j] = actionTemplate.ToAction()
+
+			// Apply parameter overrides
+			if paramOverrides != nil {
+				oes.applyParameterOverrides(&actions[j], paramOverrides)
 			}
 		}
+
+		edge.Actions = actions
+		edges[i] = edge
 	}
 
 	orderMsg := &models.OrderMessage{
 		HeaderID:      1, // Should be managed per robot
 		Timestamp:     time.Now().Format("2006-01-02T15:04:05.000000000Z"),
 		Version:       "2.0.0",
-		Manufacturer:  "Roboligent",
+		Manufacturer:  manufacturer,
 		SerialNumber:  serialNumber,
 		OrderID:       orderID,
 		OrderUpdateID: 0,
@@ -285,6 +317,11 @@ func (oes *OrderExecutionService) ExecuteDirectOrder(serialNumber string, orderD
 		return nil, fmt.Errorf("robot %s is not online", serialNumber)
 	}
 
+	// Ensure manufacturer is set
+	if orderData.Manufacturer == "" {
+		orderData.Manufacturer = oes.GetRobotManufacturer(serialNumber)
+	}
+
 	// Create order execution record
 	execution := &models.OrderExecution{
 		OrderID:       orderData.OrderID,
@@ -319,5 +356,3 @@ func (oes *OrderExecutionService) ExecuteDirectOrder(serialNumber string, orderD
 		CreatedAt:    execution.CreatedAt,
 	}, nil
 }
-
-// Helper structures - none needed

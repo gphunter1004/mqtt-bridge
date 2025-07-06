@@ -31,24 +31,29 @@ type NodeTemplate struct {
 	AllowedDeviationTheta float64 `json:"allowedDeviationTheta"`
 	MapID                 string  `json:"mapId"`
 
-	CreatedAt time.Time        `json:"createdAt"`
-	UpdatedAt time.Time        `json:"updatedAt"`
-	Actions   []ActionTemplate `json:"actions"`
+	// JSON field to store action template IDs
+	ActionTemplateIDs string `json:"actionTemplateIds"` // JSON array of action template IDs
+
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // Independent Edge Model
 type EdgeTemplate struct {
-	ID          uint             `gorm:"primaryKey" json:"id"`
-	EdgeID      string           `gorm:"unique;not null" json:"edgeId"`
-	Name        string           `json:"name"`
-	Description string           `json:"description"`
-	SequenceID  int              `json:"sequenceId"`
-	Released    bool             `json:"released"`
-	StartNodeID string           `json:"startNodeId"`
-	EndNodeID   string           `json:"endNodeId"`
-	CreatedAt   time.Time        `json:"createdAt"`
-	UpdatedAt   time.Time        `json:"updatedAt"`
-	Actions     []ActionTemplate `json:"actions"`
+	ID          uint   `gorm:"primaryKey" json:"id"`
+	EdgeID      string `gorm:"unique;not null" json:"edgeId"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	SequenceID  int    `json:"sequenceId"`
+	Released    bool   `json:"released"`
+	StartNodeID string `json:"startNodeId"`
+	EndNodeID   string `json:"endNodeId"`
+
+	// JSON field to store action template IDs
+	ActionTemplateIDs string `json:"actionTemplateIds"` // JSON array of action template IDs
+
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // Order Template Association Tables (Many-to-Many)
@@ -102,6 +107,46 @@ type OrderExecution struct {
 	ErrorMessage    string     `json:"errorMessage,omitempty"`
 }
 
+// Helper methods to handle action template IDs
+
+func (nt *NodeTemplate) GetActionTemplateIDs() ([]uint, error) {
+	if nt.ActionTemplateIDs == "" {
+		return []uint{}, nil
+	}
+
+	var ids []uint
+	err := json.Unmarshal([]byte(nt.ActionTemplateIDs), &ids)
+	return ids, err
+}
+
+func (nt *NodeTemplate) SetActionTemplateIDs(ids []uint) error {
+	data, err := json.Marshal(ids)
+	if err != nil {
+		return err
+	}
+	nt.ActionTemplateIDs = string(data)
+	return nil
+}
+
+func (et *EdgeTemplate) GetActionTemplateIDs() ([]uint, error) {
+	if et.ActionTemplateIDs == "" {
+		return []uint{}, nil
+	}
+
+	var ids []uint
+	err := json.Unmarshal([]byte(et.ActionTemplateIDs), &ids)
+	return ids, err
+}
+
+func (et *EdgeTemplate) SetActionTemplateIDs(ids []uint) error {
+	data, err := json.Marshal(ids)
+	if err != nil {
+		return err
+	}
+	et.ActionTemplateIDs = string(data)
+	return nil
+}
+
 // Helper methods to convert between template and MQTT models
 func (nt *NodeTemplate) ToNode() Node {
 	node := Node{
@@ -117,11 +162,7 @@ func (nt *NodeTemplate) ToNode() Node {
 			AllowedDeviationTheta: nt.AllowedDeviationTheta,
 			MapID:                 nt.MapID,
 		},
-		Actions: make([]Action, len(nt.Actions)),
-	}
-
-	for i, action := range nt.Actions {
-		node.Actions[i] = action.ToAction()
+		Actions: []Action{}, // Will be populated by service when needed
 	}
 
 	return node
@@ -134,11 +175,7 @@ func (et *EdgeTemplate) ToEdge() Edge {
 		Released:    et.Released,
 		StartNodeID: et.StartNodeID,
 		EndNodeID:   et.EndNodeID,
-		Actions:     make([]Action, len(et.Actions)),
-	}
-
-	for i, action := range et.Actions {
-		edge.Actions[i] = action.ToAction()
+		Actions:     []Action{}, // Will be populated by service when needed
 	}
 
 	return edge

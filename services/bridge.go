@@ -1,7 +1,6 @@
 package services
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -85,6 +84,21 @@ func (bs *BridgeService) GetRobotCapabilities(serialNumber string) (*RobotCapabi
 	return capabilities, nil
 }
 
+// GetRobotManufacturer retrieves the manufacturer from the database or defaults to "Roboligent"
+func (bs *BridgeService) GetRobotManufacturer(serialNumber string) string {
+	var connectionState models.ConnectionState
+	err := bs.db.DB.Where("serial_number = ?", serialNumber).
+		Order("created_at desc").
+		First(&connectionState).Error
+
+	if err == nil && connectionState.Manufacturer != "" {
+		return connectionState.Manufacturer
+	}
+
+	// Default manufacturer if not found in database
+	return "Roboligent"
+}
+
 // SendOrderToRobot sends an order message to the specified robot
 func (bs *BridgeService) SendOrderToRobot(serialNumber string, orderData OrderRequest) error {
 	// Check if robot is online
@@ -92,12 +106,15 @@ func (bs *BridgeService) SendOrderToRobot(serialNumber string, orderData OrderRe
 		return fmt.Errorf("robot %s is not online", serialNumber)
 	}
 
+	// Get robot manufacturer
+	manufacturer := bs.GetRobotManufacturer(serialNumber)
+
 	// Create order message
 	orderMsg := &models.OrderMessage{
 		HeaderID:      1, // This should be managed per robot
 		Timestamp:     time.Now().Format("2006-01-02T15:04:05.000000000Z"),
 		Version:       "2.0.0",
-		Manufacturer:  "Roboligent",
+		Manufacturer:  manufacturer,
 		SerialNumber:  serialNumber,
 		OrderID:       orderData.OrderID,
 		OrderUpdateID: orderData.OrderUpdateID,
@@ -122,22 +139,19 @@ func (bs *BridgeService) SendCustomAction(serialNumber string, actionRequest Cus
 		return fmt.Errorf("robot %s is not online", serialNumber)
 	}
 
+	// Get robot manufacturer
+	manufacturer := bs.GetRobotManufacturer(serialNumber)
+
 	actionMsg := &models.InstantActionMessage{
 		HeaderID:     actionRequest.HeaderID,
 		Timestamp:    time.Now().Format("2006-01-02T15:04:05.000000000Z"),
 		Version:      "2.0.0",
-		Manufacturer: "Roboligent",
+		Manufacturer: manufacturer,
 		SerialNumber: serialNumber,
 		Actions:      actionRequest.Actions,
 	}
 
-	payload, err := json.Marshal(actionMsg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal action message: %w", err)
-	}
-
-	topic := fmt.Sprintf("meili/v2/Roboligent/%s/instantActions", serialNumber)
-	err = bs.mqttClient.PublishMessage(topic, payload)
+	err := bs.mqttClient.SendCustomAction(serialNumber, manufacturer, actionMsg)
 	if err != nil {
 		return fmt.Errorf("failed to send custom action: %w", err)
 	}

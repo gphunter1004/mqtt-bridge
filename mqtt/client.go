@@ -87,13 +87,13 @@ func (c *Client) onConnectionLost(client mqtt.Client, err error) {
 }
 
 func (c *Client) subscribeToAllTopics() {
-	// Subscribe to connection topics
+	// Subscribe to connection topics (supports any manufacturer)
 	c.subscribeToConnectionTopics()
 
-	// Subscribe to factsheet topics
+	// Subscribe to factsheet topics (supports any manufacturer)
 	c.subscribeToFactsheetTopics()
 
-	// Subscribe to state topics
+	// Subscribe to state topics (supports any manufacturer)
 	c.subscribeToStateTopics()
 
 	// Subscribe to order topics (for order confirmations/responses)
@@ -101,7 +101,7 @@ func (c *Client) subscribeToAllTopics() {
 }
 
 func (c *Client) subscribeToConnectionTopics() {
-	topic := "meili/v2/Roboligent/+/connection"
+	topic := "meili/v2/+/+/connection"
 	log.Printf("[MQTT] Attempting to subscribe to connection topic: %s", topic)
 
 	token := c.client.Subscribe(topic, 1, c.handleConnectionMessage)
@@ -127,7 +127,7 @@ func (c *Client) subscribeToFactsheetTopics() {
 }
 
 func (c *Client) subscribeToStateTopics() {
-	topic := "meili/v2/Roboligent/+/state"
+	topic := "meili/v2/+/+/state"
 	log.Printf("[MQTT] Attempting to subscribe to state topic: %s", topic)
 
 	token := c.client.Subscribe(topic, 1, c.handleStateMessage)
@@ -140,7 +140,7 @@ func (c *Client) subscribeToStateTopics() {
 }
 
 func (c *Client) subscribeToOrderTopics() {
-	topic := "meili/v2/Roboligent/+/orderResponse"
+	topic := "meili/v2/+/+/orderResponse"
 	log.Printf("[MQTT] Attempting to subscribe to order response topic: %s", topic)
 
 	token := c.client.Subscribe(topic, 1, c.handleOrderResponse)
@@ -152,9 +152,23 @@ func (c *Client) subscribeToOrderTopics() {
 	}
 }
 
+// Extract manufacturer and serialNumber from topic
+func (c *Client) extractTopicInfo(topic string) (manufacturer, serialNumber string) {
+	// Expected format: meili/v2/{manufacturer}/{serialNumber}/{messageType}
+	parts := strings.Split(topic, "/")
+	if len(parts) >= 5 {
+		manufacturer = parts[2]
+		serialNumber = parts[3]
+	}
+	return
+}
+
 func (c *Client) handleConnectionMessage(client mqtt.Client, msg mqtt.Message) {
 	log.Printf("[MQTT RECEIVE] Connection message received from topic: %s", msg.Topic())
 	log.Printf("[MQTT PAYLOAD] Connection payload: %s", string(msg.Payload()))
+
+	manufacturer, serialNumber := c.extractTopicInfo(msg.Topic())
+	log.Printf("[MQTT PARSED] Extracted manufacturer: %s, serialNumber: %s", manufacturer, serialNumber)
 
 	var connectionMsg models.ConnectionMessage
 	if err := json.Unmarshal(msg.Payload(), &connectionMsg); err != nil {
@@ -185,7 +199,7 @@ func (c *Client) handleConnectionMessage(client mqtt.Client, msg mqtt.Message) {
 		log.Printf("[MQTT ACTION] Robot %s is online, requesting factsheet", connectionMsg.SerialNumber)
 		go func() {
 			time.Sleep(1 * time.Second) // Small delay before requesting factsheet
-			c.requestFactsheet(connectionMsg.SerialNumber)
+			c.requestFactsheet(serialNumber, manufacturer)
 		}()
 	}
 }
@@ -193,6 +207,9 @@ func (c *Client) handleConnectionMessage(client mqtt.Client, msg mqtt.Message) {
 func (c *Client) handleFactsheetMessage(client mqtt.Client, msg mqtt.Message) {
 	log.Printf("[MQTT RECEIVE] Factsheet message received from topic: %s", msg.Topic())
 	log.Printf("[MQTT PAYLOAD] Factsheet payload size: %d bytes", len(msg.Payload()))
+
+	manufacturer, serialNumber := c.extractTopicInfo(msg.Topic())
+	log.Printf("[MQTT PARSED] Extracted manufacturer: %s, serialNumber: %s", manufacturer, serialNumber)
 
 	// First, let's check if we can parse the JSON at all
 	var rawData map[string]interface{}
@@ -270,6 +287,9 @@ func getKeys(m map[string]interface{}) []string {
 func (c *Client) handleStateMessage(client mqtt.Client, msg mqtt.Message) {
 	log.Printf("[MQTT RECEIVE] State message received from topic: %s", msg.Topic())
 
+	manufacturer, serialNumber := c.extractTopicInfo(msg.Topic())
+	log.Printf("[MQTT PARSED] Extracted manufacturer: %s, serialNumber: %s", manufacturer, serialNumber)
+
 	var stateMsg models.StateMessage
 	if err := json.Unmarshal(msg.Payload(), &stateMsg); err != nil {
 		log.Printf("[MQTT ERROR] Failed to unmarshal state message: %v", err)
@@ -289,7 +309,7 @@ func (c *Client) handleStateMessage(client mqtt.Client, msg mqtt.Message) {
 	// Check if position needs initialization
 	if !stateMsg.AgvPosition.PositionInitialized {
 		log.Printf("[MQTT ACTION] Robot %s position not initialized, sending initPosition command", stateMsg.SerialNumber)
-		c.sendInitPosition(stateMsg.SerialNumber)
+		c.sendInitPosition(serialNumber, manufacturer)
 	}
 }
 
@@ -297,18 +317,14 @@ func (c *Client) handleOrderResponse(client mqtt.Client, msg mqtt.Message) {
 	log.Printf("[MQTT RECEIVE] Order response received from topic: %s", msg.Topic())
 	log.Printf("[MQTT PAYLOAD] Order response payload: %s", string(msg.Payload()))
 
-	// Extract serial number from topic
-	topicParts := strings.Split(msg.Topic(), "/")
-	if len(topicParts) >= 4 {
-		serialNumber := topicParts[3]
-		log.Printf("[MQTT PARSED] Order response from robot: %s", serialNumber)
+	manufacturer, serialNumber := c.extractTopicInfo(msg.Topic())
+	log.Printf("[MQTT PARSED] Order response from manufacturer: %s, robot: %s", manufacturer, serialNumber)
 
-		// You can add additional processing here for order responses
-		// For example, updating order status in database
-	}
+	// You can add additional processing here for order responses
+	// For example, updating order status in database
 }
 
-func (c *Client) requestFactsheet(serialNumber string) {
+func (c *Client) requestFactsheet(serialNumber, manufacturer string) {
 	headerID := c.getNextHeaderID(serialNumber)
 	actionID := c.generateActionID() + "_" + strconv.FormatInt(time.Now().UnixNano()/1000000, 10)
 
@@ -316,7 +332,7 @@ func (c *Client) requestFactsheet(serialNumber string) {
 		HeaderID:     headerID,
 		Timestamp:    time.Now().Format("2006-01-02T15:04:05.000000000Z"),
 		Version:      "2.0.0",
-		Manufacturer: "Roboligent",
+		Manufacturer: manufacturer,
 		SerialNumber: serialNumber,
 		Actions: []models.Action{
 			{
@@ -328,7 +344,7 @@ func (c *Client) requestFactsheet(serialNumber string) {
 		},
 	}
 
-	topic := fmt.Sprintf("meili/v2/Roboligent/%s/instantActions", serialNumber)
+	topic := fmt.Sprintf("meili/v2/%s/%s/instantActions", manufacturer, serialNumber)
 	log.Printf("[MQTT SEND] Sending factsheet request to topic: %s", topic)
 	log.Printf("[MQTT SEND] Factsheet request - HeaderID: %d, ActionID: %s", headerID, actionID)
 
@@ -339,7 +355,7 @@ func (c *Client) requestFactsheet(serialNumber string) {
 	}
 }
 
-func (c *Client) sendInitPosition(serialNumber string) {
+func (c *Client) sendInitPosition(serialNumber, manufacturer string) {
 	headerID := c.getNextHeaderID(serialNumber)
 	actionID := c.generateActionID() + "_" + strconv.FormatInt(time.Now().UnixNano()/1000000, 10)
 
@@ -355,7 +371,7 @@ func (c *Client) sendInitPosition(serialNumber string) {
 		HeaderID:     headerID,
 		Timestamp:    time.Now().Format("2006-01-02T15:04:05.000000000Z"),
 		Version:      "2.0.0",
-		Manufacturer: "Roboligent",
+		Manufacturer: manufacturer,
 		SerialNumber: serialNumber,
 		Actions: []models.Action{
 			{
@@ -372,7 +388,7 @@ func (c *Client) sendInitPosition(serialNumber string) {
 		},
 	}
 
-	topic := fmt.Sprintf("meili/v2/Roboligent/%s/instantActions", serialNumber)
+	topic := fmt.Sprintf("meili/v2/%s/%s/instantActions", manufacturer, serialNumber)
 	log.Printf("[MQTT SEND] Sending initPosition command to topic: %s", topic)
 	log.Printf("[MQTT SEND] InitPosition request - HeaderID: %d, ActionID: %s", headerID, actionID)
 
@@ -384,7 +400,9 @@ func (c *Client) sendInitPosition(serialNumber string) {
 }
 
 func (c *Client) SendOrder(serialNumber string, orderMsg *models.OrderMessage) error {
-	topic := fmt.Sprintf("meili/v2/Roboligent/%s/order", serialNumber)
+	// Use manufacturer from the order message
+	manufacturer := orderMsg.Manufacturer
+	topic := fmt.Sprintf("meili/v2/%s/%s/order", manufacturer, serialNumber)
 	log.Printf("[MQTT SEND] Sending order to topic: %s", topic)
 	log.Printf("[MQTT SEND] Order details - OrderID: %s, UpdateID: %d, Nodes: %d",
 		orderMsg.OrderID, orderMsg.OrderUpdateID, len(orderMsg.Nodes))
@@ -395,6 +413,20 @@ func (c *Client) SendOrder(serialNumber string, orderMsg *models.OrderMessage) e
 	}
 
 	log.Printf("[MQTT SUCCESS] Order sent successfully to robot: %s", serialNumber)
+	return nil
+}
+
+// SendCustomAction sends a custom action with manufacturer support
+func (c *Client) SendCustomAction(serialNumber, manufacturer string, actionMsg *models.InstantActionMessage) error {
+	topic := fmt.Sprintf("meili/v2/%s/%s/instantActions", manufacturer, serialNumber)
+	log.Printf("[MQTT SEND] Sending custom action to topic: %s", topic)
+
+	if err := c.publishMessage(topic, actionMsg); err != nil {
+		log.Printf("[MQTT ERROR] Failed to send custom action: %v", err)
+		return err
+	}
+
+	log.Printf("[MQTT SUCCESS] Custom action sent successfully to robot: %s", serialNumber)
 	return nil
 }
 
@@ -450,14 +482,14 @@ func (c *Client) generateActionID() string {
 func (c *Client) LogSubscribedTopics() {
 	log.Println("====================================")
 	log.Println("[MQTT] Currently subscribed topics:")
-	log.Println("[MQTT] 1. meili/v2/Roboligent/+/connection (Robot connection states)")
-	log.Println("[MQTT] 2. meili/v2/+/+/factsheet (Robot factsheet responses)")
-	log.Println("[MQTT] 3. meili/v2/Roboligent/+/state (Robot state updates)")
-	log.Println("[MQTT] 4. meili/v2/Roboligent/+/orderResponse (Order confirmations)")
+	log.Println("[MQTT] 1. meili/v2/+/+/connection (Robot connection states - any manufacturer)")
+	log.Println("[MQTT] 2. meili/v2/+/+/factsheet (Robot factsheet responses - any manufacturer)")
+	log.Println("[MQTT] 3. meili/v2/+/+/state (Robot state updates - any manufacturer)")
+	log.Println("[MQTT] 4. meili/v2/+/+/orderResponse (Order confirmations - any manufacturer)")
 	log.Println("====================================")
 	log.Println("[MQTT] Published topics by bridge:")
-	log.Println("[MQTT] 1. meili/v2/Roboligent/{serial}/instantActions (Commands to robots)")
-	log.Println("[MQTT] 2. meili/v2/Roboligent/{serial}/order (Orders to robots)")
+	log.Println("[MQTT] 1. meili/v2/{manufacturer}/{serial}/instantActions (Commands to robots)")
+	log.Println("[MQTT] 2. meili/v2/{manufacturer}/{serial}/order (Orders to robots)")
 	log.Println("====================================")
 }
 

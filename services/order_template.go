@@ -9,12 +9,14 @@ import (
 )
 
 type OrderTemplateService struct {
-	db *database.Database
+	db            *database.Database
+	actionService *ActionService
 }
 
 func NewOrderTemplateService(db *database.Database) *OrderTemplateService {
 	return &OrderTemplateService{
-		db: db,
+		db:            db,
+		actionService: NewActionService(db),
 	}
 }
 
@@ -109,7 +111,7 @@ func (ots *OrderTemplateService) GetOrderTemplateWithDetails(id uint) (*OrderTem
 	// Get associated nodes
 	var nodeAssociations []models.OrderTemplateNode
 	err = ots.db.DB.Where("order_template_id = ?", id).
-		Preload("NodeTemplate.Actions.Parameters").
+		Preload("NodeTemplate").
 		Find(&nodeAssociations).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get template nodes: %w", err)
@@ -118,27 +120,65 @@ func (ots *OrderTemplateService) GetOrderTemplateWithDetails(id uint) (*OrderTem
 	// Get associated edges
 	var edgeAssociations []models.OrderTemplateEdge
 	err = ots.db.DB.Where("order_template_id = ?", id).
-		Preload("EdgeTemplate.Actions.Parameters").
+		Preload("EdgeTemplate").
 		Find(&edgeAssociations).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get template edges: %w", err)
 	}
 
-	// Extract nodes and edges
-	nodes := make([]models.NodeTemplate, len(nodeAssociations))
+	// Extract nodes and edges with their actions
+	nodesWithActions := make([]NodeWithActions, len(nodeAssociations))
 	for i, assoc := range nodeAssociations {
-		nodes[i] = assoc.NodeTemplate
+		// Get actions for this node
+		actionIDs, err := assoc.NodeTemplate.GetActionTemplateIDs()
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse node action template IDs: %w", err)
+		}
+
+		var actions []models.ActionTemplate
+		if len(actionIDs) > 0 {
+			err = ots.db.DB.Where("id IN ?", actionIDs).
+				Preload("Parameters").
+				Find(&actions).Error
+			if err != nil {
+				return nil, fmt.Errorf("failed to get node actions: %w", err)
+			}
+		}
+
+		nodesWithActions[i] = NodeWithActions{
+			NodeTemplate: assoc.NodeTemplate,
+			Actions:      actions,
+		}
 	}
 
-	edges := make([]models.EdgeTemplate, len(edgeAssociations))
+	edgesWithActions := make([]EdgeWithActions, len(edgeAssociations))
 	for i, assoc := range edgeAssociations {
-		edges[i] = assoc.EdgeTemplate
+		// Get actions for this edge
+		actionIDs, err := assoc.EdgeTemplate.GetActionTemplateIDs()
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse edge action template IDs: %w", err)
+		}
+
+		var actions []models.ActionTemplate
+		if len(actionIDs) > 0 {
+			err = ots.db.DB.Where("id IN ?", actionIDs).
+				Preload("Parameters").
+				Find(&actions).Error
+			if err != nil {
+				return nil, fmt.Errorf("failed to get edge actions: %w", err)
+			}
+		}
+
+		edgesWithActions[i] = EdgeWithActions{
+			EdgeTemplate: assoc.EdgeTemplate,
+			Actions:      actions,
+		}
 	}
 
 	result := &OrderTemplateWithDetails{
-		OrderTemplate: *template,
-		Nodes:         nodes,
-		Edges:         edges,
+		OrderTemplate:    *template,
+		NodesWithActions: nodesWithActions,
+		EdgesWithActions: edgesWithActions,
 	}
 
 	return result, nil
@@ -347,9 +387,4 @@ func (ots *OrderTemplateService) AssociateEdges(templateID uint, req *models.Ass
 	return tx.Commit().Error
 }
 
-// Helper structures - Updated to remove node/edge associations
-type OrderTemplateWithDetails struct {
-	OrderTemplate models.OrderTemplate  `json:"orderTemplate"`
-	Nodes         []models.NodeTemplate `json:"nodes"`
-	Edges         []models.EdgeTemplate `json:"edges"`
-}
+// Helper structures are defined in types.go
