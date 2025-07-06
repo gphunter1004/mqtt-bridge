@@ -111,6 +111,8 @@ LIMIT ?
 
 ---
 
+## 🎯 Robot Control API - Enhanced (NEW)
+
 ### `POST /api/v1/robots/{serialNumber}/inference`
 **연관 테이블:**
 - **READ**: Redis - 로봇 온라인 상태 확인
@@ -134,6 +136,229 @@ LIMIT ?
 - **Payload**: 자동 생성된 OrderMessage (trajectory 액션이 포함된 노드)
 
 **동작:** 궤적 액션이 포함된 주문을 자동 생성하여 전송
+
+---
+
+### `POST /api/v1/robots/{serialNumber}/inference/with-position` ⭐ **NEW**
+**연관 테이블:**
+- **READ**: Redis - 로봇 온라인 상태 확인
+- **INSERT**: `order_executions` - 추론 주문 기록
+
+**MQTT 전송:**
+- **Topic**: `meili/v2/Roboligent/{serialNumber}/order`
+- **Payload**: 사용자 지정 위치가 포함된 OrderMessage
+
+**요청 예시:**
+```json
+{
+  "inferenceName": "object_detection",
+  "position": {
+    "x": 10.5,
+    "y": 15.2,
+    "theta": 1.57,
+    "allowedDeviationXY": 0.1,
+    "allowedDeviationTheta": 0.05,
+    "mapId": "warehouse_map_001"
+  }
+}
+```
+
+---
+
+### `POST /api/v1/robots/{serialNumber}/trajectory/with-position` ⭐ **NEW**
+**연관 테이블:**
+- **READ**: Redis - 로봇 온라인 상태 확인
+- **INSERT**: `order_executions` - 궤적 주문 기록
+
+**MQTT 전송:**
+- **Topic**: `meili/v2/Roboligent/{serialNumber}/order`
+- **Payload**: 사용자 지정 위치가 포함된 OrderMessage
+
+**요청 예시:**
+```json
+{
+  "trajectoryName": "pick_sequence_A",
+  "arm": "left",
+  "position": {
+    "x": 5.0,
+    "y": 8.3,
+    "theta": 0.0,
+    "mapId": "production_floor"
+  }
+}
+```
+
+---
+
+### `POST /api/v1/robots/{serialNumber}/inference/custom` ⭐ **NEW**
+**연관 테이블:**
+- **READ**: Redis - 로봇 온라인 상태 확인
+- **INSERT**: `order_executions` - 커스텀 추론 주문 기록
+
+**MQTT 전송:**
+- **Topic**: `meili/v2/Roboligent/{serialNumber}/order`
+- **Payload**: 완전 커스터마이징된 OrderMessage
+
+**요청 예시:**
+```json
+{
+  "inferenceName": "quality_inspection",
+  "description": "Quality inspection at station A",
+  "sequenceId": 1,
+  "released": true,
+  "position": {
+    "x": 12.0,
+    "y": 18.5,
+    "theta": 3.14,
+    "mapId": "quality_control_zone"
+  },
+  "actionType": "Custom Quality Inspection",
+  "actionDescription": "Perform detailed quality inspection",
+  "blockingType": "HARD",
+  "customParameters": {
+    "inspection_level": "detailed",
+    "timeout": 120,
+    "camera_settings": {
+      "resolution": "high",
+      "lighting": "auto"
+    }
+  },
+  "edges": []
+}
+```
+
+---
+
+### `POST /api/v1/robots/{serialNumber}/trajectory/custom` ⭐ **NEW**
+**연관 테이블:**
+- **READ**: Redis - 로봇 온라인 상태 확인
+- **INSERT**: `order_executions` - 커스텀 궤적 주문 기록
+
+**MQTT 전송:**
+- **Topic**: `meili/v2/Roboligent/{serialNumber}/order`
+- **Payload**: 완전 커스터마이징된 OrderMessage
+
+**요청 예시:**
+```json
+{
+  "trajectoryName": "advanced_pick_sequence",
+  "arm": "dual",
+  "description": "Advanced dual-arm pick sequence",
+  "sequenceId": 2,
+  "released": true,
+  "position": {
+    "x": 7.2,
+    "y": 11.8,
+    "theta": 1.57,
+    "mapId": "assembly_line_B"
+  },
+  "actionType": "Dual Arm Trajectory",
+  "actionDescription": "Execute synchronized dual-arm trajectory",
+  "blockingType": "HARD",
+  "customParameters": {
+    "sync_mode": "coordinated",
+    "speed_multiplier": 0.8,
+    "safety_margin": 0.05,
+    "collision_avoidance": true
+  }
+}
+```
+
+---
+
+### `POST /api/v1/robots/{serialNumber}/order/dynamic` ⭐ **NEW**
+**연관 테이블:**
+- **READ**: Redis - 로봇 온라인 상태 확인
+- **INSERT**: `order_executions` - 동적 주문 기록
+
+**MQTT 전송:**
+- **Topic**: `meili/v2/Roboligent/{serialNumber}/order`
+- **Payload**: 완전히 커스터마이징된 다중 노드/엣지 OrderMessage
+
+**요청 예시:**
+```json
+{
+  "orderUpdateId": 0,
+  "nodes": [
+    {
+      "nodeId": "dynamic_pickup_001",
+      "description": "Dynamic pickup point",
+      "sequenceId": 0,
+      "released": true,
+      "nodePosition": {
+        "x": 1.0,
+        "y": 2.0,
+        "theta": 0.0,
+        "allowedDeviationXY": 0.1,
+        "allowedDeviationTheta": 0.05,
+        "mapId": "warehouse_section_A"
+      },
+      "actions": [
+        {
+          "actionType": "pick",
+          "actionId": "pick_dynamic_001",
+          "blockingType": "HARD",
+          "actionParameters": [
+            { "key": "gripperForce", "value": 75 },
+            { "key": "approach_speed", "value": 0.5 }
+          ]
+        }
+      ]
+    },
+    {
+      "nodeId": "dynamic_place_002",
+      "description": "Dynamic placement point",
+      "sequenceId": 1,
+      "released": true,
+      "nodePosition": {
+        "x": 15.0,
+        "y": 8.0,
+        "theta": 1.57,
+        "allowedDeviationXY": 0.1,
+        "allowedDeviationTheta": 0.05,
+        "mapId": "warehouse_section_B"
+      },
+      "actions": [
+        {
+          "actionType": "place",
+          "actionId": "place_dynamic_001",
+          "blockingType": "HARD",
+          "actionParameters": [
+            { "key": "release_height", "value": 0.1 },
+            { "key": "placement_force", "value": 10 }
+          ]
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "edgeId": "dynamic_transport_001",
+      "sequenceId": 0,
+      "released": true,
+      "startNodeId": "dynamic_pickup_001",
+      "endNodeId": "dynamic_place_002",
+      "actions": [
+        {
+          "actionType": "navigate",
+          "actionId": "nav_dynamic_001",
+          "blockingType": "SOFT",
+          "actionParameters": [
+            { "key": "maxSpeed", "value": 2.0 },
+            { "key": "avoidance_mode", "value": "dynamic" }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+**동작:**
+- 완전히 유연한 주문 생성
+- 다중 노드와 엣지 지원
+- 복잡한 워크플로우 구성 가능
+- 자동 ID 생성 (비어있는 경우)
 
 ---
 
@@ -548,6 +773,11 @@ LIMIT ? OFFSET ?
   - `POST /orders/execute/template/{id}/robot/{serialNumber}`
   - `POST /robots/{serialNumber}/inference`
   - `POST /robots/{serialNumber}/trajectory`
+  - `POST /robots/{serialNumber}/inference/with-position` ⭐ **NEW**
+  - `POST /robots/{serialNumber}/trajectory/with-position` ⭐ **NEW**
+  - `POST /robots/{serialNumber}/inference/custom` ⭐ **NEW**
+  - `POST /robots/{serialNumber}/trajectory/custom` ⭐ **NEW**
+  - `POST /robots/{serialNumber}/order/dynamic` ⭐ **NEW**
 
 **메시지 구조 (OrderMessage):**
 ```json
@@ -794,8 +1024,44 @@ MQTT 메시지 생성 → instantActions 토픽 →
 - `GET /api/v1/order-templates/{id}/details` - 복잡한 JOIN 쿼리
 - Bulk 작업 API - 대량 데이터 처리
 - 주문 실행 API - 여러 테이블 조회 및 데이터 변환
+- **Enhanced Robot Control APIs** - 복잡한 데이터 변환 및 MQTT 메시지 생성
 
 ### 데이터 정합성
 - Node/Edge 삭제 시 연관 액션 템플릿도 함께 삭제
 - 주문 템플릿 수정 시 기존 연결 삭제 후 재생성
 - 액션 템플릿 수정 시 파라미터 전체 교체
+
+---
+
+## 🆕 Enhanced Robot Control API 특징
+
+### **API 계층 구조:**
+```
+기본 → 위치 지정 → 완전 커스터마이징
+├── inference          ├── inference/with-position          ├── inference/custom
+├── trajectory         ├── trajectory/with-position         ├── trajectory/custom
+└── order             └── (기존 order API)                └── order/dynamic
+```
+
+### **사용 시나리오:**
+
+#### **1단계 - 기본 사용:**
+- 간단한 추론/궤적 실행
+- 기본 위치 (0,0,0) 사용
+- 최소한의 파라미터
+
+#### **2단계 - 위치 지정:**
+- 특정 위치에서 작업 실행
+- 정확한 좌표 지정 필요
+- 맵 기반 위치 설정
+
+#### **3단계 - 완전 커스터마이징:**
+- 모든 파라미터 제어
+- 복잡한 워크플로우 구성
+- 다중 노드/엣지 지원
+
+### **주요 이점:**
+1. **점진적 복잡성**: 기본 → 고급 순으로 학습 가능
+2. **유연성**: 단순한 작업부터 복잡한 워크플로우까지 지원
+3. **재사용성**: 커스텀 파라미터로 다양한 상황 대응
+4. **확장성**: 새로운 액션 타입 쉽게 추가 가능
