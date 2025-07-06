@@ -1,12 +1,12 @@
 package services
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 
 	"mqtt-bridge/database"
 	"mqtt-bridge/models"
+	"mqtt-bridge/utils"
 
 	"gorm.io/gorm"
 )
@@ -298,7 +298,7 @@ func (es *EdgeService) createActionTemplateInTx(tx *gorm.DB, actionReq *models.A
 
 	// Create action parameters
 	for _, paramReq := range actionReq.Parameters {
-		valueStr, err := es.convertValueToString(paramReq.Value, paramReq.ValueType)
+		valueStr, err := utils.ConvertValueToString(paramReq.Value, paramReq.ValueType)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert parameter value: %w", err)
 		}
@@ -330,28 +330,6 @@ func (es *EdgeService) deleteActionTemplatesInTx(tx *gorm.DB, actionIDs []uint) 
 	}
 
 	return nil
-}
-
-func (es *EdgeService) convertValueToString(value interface{}, valueType string) (string, error) {
-	if value == nil {
-		return "", nil
-	}
-
-	switch valueType {
-	case "string":
-		if str, ok := value.(string); ok {
-			return str, nil
-		}
-		return fmt.Sprintf("%v", value), nil
-	case "object", "number", "boolean":
-		jsonBytes, err := json.Marshal(value)
-		if err != nil {
-			return "", err
-		}
-		return string(jsonBytes), nil
-	default:
-		return fmt.Sprintf("%v", value), nil
-	}
 }
 
 // Helper structures are defined in types.go

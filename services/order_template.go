@@ -386,5 +386,3 @@ func (ots *OrderTemplateService) AssociateEdges(templateID uint, req *models.Ass
 
 	return tx.Commit().Error
 }
-
-// Helper structures are defined in types.go

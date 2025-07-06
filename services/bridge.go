@@ -48,7 +48,7 @@ func (bs *BridgeService) GetRobotConnectionHistory(serialNumber string, limit in
 	return connections, err
 }
 
-func (bs *BridgeService) GetRobotCapabilities(serialNumber string) (*RobotCapabilities, error) {
+func (bs *BridgeService) GetRobotCapabilities(serialNumber string) (*models.RobotCapabilities, error) {
 	var physicalParams models.PhysicalParameter
 	if err := bs.db.DB.Where("serial_number = ?", serialNumber).First(&physicalParams).Error; err != nil {
 		return nil, fmt.Errorf("failed to get physical parameters: %w", err)
@@ -64,7 +64,7 @@ func (bs *BridgeService) GetRobotCapabilities(serialNumber string) (*RobotCapabi
 		return nil, fmt.Errorf("failed to get AGV actions: %w", err)
 	}
 
-	return &RobotCapabilities{
+	return &models.RobotCapabilities{
 		SerialNumber:       serialNumber,
 		PhysicalParameters: physicalParams,
 		TypeSpecification:  typeSpec,
@@ -105,13 +105,13 @@ func (bs *BridgeService) GetConnectedRobots() ([]string, error) {
 	return robots, nil
 }
 
-func (bs *BridgeService) MonitorRobotHealth(serialNumber string) (*RobotHealthStatus, error) {
+func (bs *BridgeService) MonitorRobotHealth(serialNumber string) (*models.RobotHealthStatus, error) {
 	state, err := bs.GetRobotState(serialNumber)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get robot state for health check: %w", err)
 	}
 
-	return &RobotHealthStatus{
+	return &models.RobotHealthStatus{
 		SerialNumber:        serialNumber,
 		IsOnline:            bs.redis.IsRobotOnline(serialNumber),
 		BatteryCharge:       state.BatteryState.BatteryCharge,
@@ -131,23 +131,23 @@ func (bs *BridgeService) MonitorRobotHealth(serialNumber string) (*RobotHealthSt
 // UNIFIED ORDER SENDING METHODS
 // ===================================================================
 
-func (bs *BridgeService) SendOrderToRobot(serialNumber string, orderData OrderRequest) error {
+func (bs *BridgeService) SendOrderToRobot(serialNumber string, orderData models.OrderRequest) error {
 	return bs.sendOrderWithTransport(serialNumber, orderData, bs.messageService.GetDefaultTransport())
 }
 
-func (bs *BridgeService) SendOrderToRobotWithTransport(serialNumber string, orderData OrderRequest, transportType transport.TransportType) error {
+func (bs *BridgeService) SendOrderToRobotWithTransport(serialNumber string, orderData models.OrderRequest, transportType transport.TransportType) error {
 	return bs.sendOrderWithTransport(serialNumber, orderData, transportType)
 }
 
-func (bs *BridgeService) SendOrderToRobotViaHTTP(serialNumber string, orderData OrderRequest) error {
+func (bs *BridgeService) SendOrderToRobotViaHTTP(serialNumber string, orderData models.OrderRequest) error {
 	return bs.sendOrderWithTransport(serialNumber, orderData, transport.TransportTypeHTTP)
 }
 
-func (bs *BridgeService) SendOrderToRobotViaWebSocket(serialNumber string, orderData OrderRequest) error {
+func (bs *BridgeService) SendOrderToRobotViaWebSocket(serialNumber string, orderData models.OrderRequest) error {
 	return bs.sendOrderWithTransport(serialNumber, orderData, transport.TransportTypeWebSocket)
 }
 
-func (bs *BridgeService) sendOrderWithTransport(serialNumber string, orderData OrderRequest, transportType transport.TransportType) error {
+func (bs *BridgeService) sendOrderWithTransport(serialNumber string, orderData models.OrderRequest, transportType transport.TransportType) error {
 	if !bs.redis.IsRobotOnline(serialNumber) {
 		return fmt.Errorf("robot %s is not online", serialNumber)
 	}
@@ -177,19 +177,19 @@ func (bs *BridgeService) sendOrderWithTransport(serialNumber string, orderData O
 // UNIFIED CUSTOM ACTION METHODS
 // ===================================================================
 
-func (bs *BridgeService) SendCustomAction(serialNumber string, actionRequest CustomActionRequest) error {
+func (bs *BridgeService) SendCustomAction(serialNumber string, actionRequest models.CustomActionRequest) error {
 	return bs.sendCustomActionWithTransport(serialNumber, actionRequest, bs.messageService.GetDefaultTransport())
 }
 
-func (bs *BridgeService) SendCustomActionWithTransport(serialNumber string, actionRequest CustomActionRequest, transportType transport.TransportType) error {
+func (bs *BridgeService) SendCustomActionWithTransport(serialNumber string, actionRequest models.CustomActionRequest, transportType transport.TransportType) error {
 	return bs.sendCustomActionWithTransport(serialNumber, actionRequest, transportType)
 }
 
-func (bs *BridgeService) SendCustomActionViaHTTP(serialNumber string, actionRequest CustomActionRequest) error {
+func (bs *BridgeService) SendCustomActionViaHTTP(serialNumber string, actionRequest models.CustomActionRequest) error {
 	return bs.sendCustomActionWithTransport(serialNumber, actionRequest, transport.TransportTypeHTTP)
 }
 
-func (bs *BridgeService) sendCustomActionWithTransport(serialNumber string, actionRequest CustomActionRequest, transportType transport.TransportType) error {
+func (bs *BridgeService) sendCustomActionWithTransport(serialNumber string, actionRequest models.CustomActionRequest, transportType transport.TransportType) error {
 	if !bs.redis.IsRobotOnline(serialNumber) {
 		return fmt.Errorf("robot %s is not online", serialNumber)
 	}
@@ -563,40 +563,6 @@ func (bs *BridgeService) updateOrderStatus(orderID, status, errorMessage string)
 // ===================================================================
 // TYPE DEFINITIONS
 // ===================================================================
-
-type RobotCapabilities struct {
-	SerialNumber       string                   `json:"serialNumber"`
-	PhysicalParameters models.PhysicalParameter `json:"physicalParameters"`
-	TypeSpecification  models.TypeSpecification `json:"typeSpecification"`
-	AvailableActions   []models.AgvAction       `json:"availableActions"`
-}
-
-type OrderRequest struct {
-	OrderID       string        `json:"orderId"`
-	OrderUpdateID int           `json:"orderUpdateId"`
-	Nodes         []models.Node `json:"nodes"`
-	Edges         []models.Edge `json:"edges"`
-}
-
-type CustomActionRequest struct {
-	HeaderID int             `json:"headerId"`
-	Actions  []models.Action `json:"actions"`
-}
-
-type RobotHealthStatus struct {
-	SerialNumber        string    `json:"serialNumber"`
-	IsOnline            bool      `json:"isOnline"`
-	BatteryCharge       float64   `json:"batteryCharge"`
-	BatteryVoltage      float64   `json:"batteryVoltage"`
-	IsCharging          bool      `json:"isCharging"`
-	PositionInitialized bool      `json:"positionInitialized"`
-	HasErrors           bool      `json:"hasErrors"`
-	ErrorCount          int       `json:"errorCount"`
-	OperatingMode       string    `json:"operatingMode"`
-	IsPaused            bool      `json:"isPaused"`
-	IsDriving           bool      `json:"isDriving"`
-	LastUpdate          time.Time `json:"lastUpdate"`
-}
 
 type CustomInferenceOrderRequest struct {
 	SerialNumber      string                 `json:"serialNumber"`

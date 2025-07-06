@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"mqtt-bridge/services"
+	"mqtt-bridge/models"
 	"mqtt-bridge/transport"
 	"mqtt-bridge/utils"
 
@@ -22,7 +22,7 @@ func (h *APIHandler) SendOrder(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "Serial number is required")
 	}
 
-	var orderRequest services.OrderRequest
+	var orderRequest models.OrderRequest
 	if err := c.Bind(&orderRequest); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
 	}
@@ -48,7 +48,7 @@ func (h *APIHandler) SendCustomAction(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "Serial number is required")
 	}
 
-	var actionRequest services.CustomActionRequest
+	var actionRequest models.CustomActionRequest
 	if err := c.Bind(&actionRequest); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
 	}
@@ -87,7 +87,7 @@ func (h *APIHandler) SendOrderWithTransport(c echo.Context) error {
 		transportType = transport.TransportTypeMQTT
 	}
 
-	var orderRequest services.OrderRequest
+	var orderRequest models.OrderRequest
 	if err := c.Bind(&orderRequest); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
 	}
@@ -111,7 +111,7 @@ func (h *APIHandler) SendOrderWithTransport(c echo.Context) error {
 func (h *APIHandler) SendOrderViaHTTP(c echo.Context) error {
 	serialNumber := c.Param("serialNumber")
 
-	var orderRequest services.OrderRequest
+	var orderRequest models.OrderRequest
 	if err := c.Bind(&orderRequest); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
 	}
@@ -135,7 +135,7 @@ func (h *APIHandler) SendOrderViaHTTP(c echo.Context) error {
 func (h *APIHandler) SendOrderViaWebSocket(c echo.Context) error {
 	serialNumber := c.Param("serialNumber")
 
-	var orderRequest services.OrderRequest
+	var orderRequest models.OrderRequest
 	if err := c.Bind(&orderRequest); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
 	}
@@ -175,7 +175,7 @@ func (h *APIHandler) SendCustomActionWithTransport(c echo.Context) error {
 		transportType = transport.TransportTypeMQTT
 	}
 
-	var actionRequest services.CustomActionRequest
+	var actionRequest models.CustomActionRequest
 	if err := c.Bind(&actionRequest); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
 	}
@@ -199,7 +199,7 @@ func (h *APIHandler) SendCustomActionWithTransport(c echo.Context) error {
 func (h *APIHandler) SendCustomActionViaHTTP(c echo.Context) error {
 	serialNumber := c.Param("serialNumber")
 
-	var actionRequest services.CustomActionRequest
+	var actionRequest models.CustomActionRequest
 	if err := c.Bind(&actionRequest); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
 	}

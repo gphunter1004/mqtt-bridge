@@ -7,6 +7,7 @@ import (
 
 	"mqtt-bridge/database"
 	"mqtt-bridge/models"
+	"mqtt-bridge/utils"
 
 	"gorm.io/gorm"
 )
@@ -343,7 +344,7 @@ func (as *ActionService) GetActionTemplatesByBlockingType(blockingType string, l
 
 func (as *ActionService) createActionParameter(tx *gorm.DB, actionID uint, paramReq *models.ActionParameterTemplateRequest) error {
 	// Convert value to JSON string based on type
-	valueStr, err := as.convertValueToString(paramReq.Value, paramReq.ValueType)
+	valueStr, err := utils.ConvertValueToString(paramReq.Value, paramReq.ValueType)
 	if err != nil {
 		return fmt.Errorf("failed to convert parameter value: %w", err)
 	}
@@ -356,26 +357,4 @@ func (as *ActionService) createActionParameter(tx *gorm.DB, actionID uint, param
 	}
 
 	return tx.Create(param).Error
-}
-
-func (as *ActionService) convertValueToString(value interface{}, valueType string) (string, error) {
-	if value == nil {
-		return "", nil
-	}
-
-	switch valueType {
-	case "string":
-		if str, ok := value.(string); ok {
-			return str, nil
-		}
-		return fmt.Sprintf("%v", value), nil
-	case "object", "number", "boolean":
-		jsonBytes, err := json.Marshal(value)
-		if err != nil {
-			return "", err
-		}
-		return string(jsonBytes), nil
-	default:
-		return fmt.Sprintf("%v", value), nil
-	}
 }
