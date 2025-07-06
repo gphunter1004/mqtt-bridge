@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -9,7 +8,7 @@ import (
 	"mqtt-bridge/models"
 	"mqtt-bridge/services"
 
-	"github.com/gorilla/mux"
+	"github.com/labstack/echo/v4"
 )
 
 type NodeHandler struct {
@@ -23,64 +22,53 @@ func NewNodeHandler(nodeService *services.NodeService) *NodeHandler {
 }
 
 // CreateNode creates a new node
-func (h *NodeHandler) CreateNode(w http.ResponseWriter, r *http.Request) {
+func (h *NodeHandler) CreateNode(c echo.Context) error {
 	var req models.NodeTemplateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
-		return
+	if err := c.Bind(&req); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
 	}
 
 	node, err := h.nodeService.CreateNode(&req)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create node: %v", err), http.StatusInternalServerError)
-		return
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to create node: %v", err))
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(node)
+	return c.JSON(http.StatusCreated, node)
 }
 
 // GetNode retrieves a specific node by its database ID
-func (h *NodeHandler) GetNode(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	nodeIDStr := vars["nodeId"]
+func (h *NodeHandler) GetNode(c echo.Context) error {
+	nodeIDStr := c.Param("nodeId")
 
 	nodeID, err := strconv.ParseUint(nodeIDStr, 10, 32)
 	if err != nil {
-		http.Error(w, "Invalid node ID", http.StatusBadRequest)
-		return
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid node ID")
 	}
 
 	node, err := h.nodeService.GetNode(uint(nodeID))
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get node: %v", err), http.StatusNotFound)
-		return
+		return echo.NewHTTPError(http.StatusNotFound, fmt.Sprintf("Failed to get node: %v", err))
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(node)
+	return c.JSON(http.StatusOK, node)
 }
 
 // GetNodeByNodeID retrieves a node by its nodeId
-func (h *NodeHandler) GetNodeByNodeID(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	nodeID := vars["nodeId"]
+func (h *NodeHandler) GetNodeByNodeID(c echo.Context) error {
+	nodeID := c.Param("nodeId")
 
 	node, err := h.nodeService.GetNodeByNodeID(nodeID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get node: %v", err), http.StatusNotFound)
-		return
+		return echo.NewHTTPError(http.StatusNotFound, fmt.Sprintf("Failed to get node: %v", err))
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(node)
+	return c.JSON(http.StatusOK, node)
 }
 
 // ListNodes retrieves all nodes
-func (h *NodeHandler) ListNodes(w http.ResponseWriter, r *http.Request) {
-	limitStr := r.URL.Query().Get("limit")
-	offsetStr := r.URL.Query().Get("offset")
+func (h *NodeHandler) ListNodes(c echo.Context) error {
+	limitStr := c.QueryParam("limit")
+	offsetStr := c.QueryParam("offset")
 
 	limit := 10 // default limit
 	if limitStr != "" {
@@ -98,8 +86,7 @@ func (h *NodeHandler) ListNodes(w http.ResponseWriter, r *http.Request) {
 
 	nodes, err := h.nodeService.ListNodes(limit, offset)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to list nodes: %v", err), http.StatusInternalServerError)
-		return
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to list nodes: %v", err))
 	}
 
 	response := map[string]interface{}{
@@ -107,52 +94,43 @@ func (h *NodeHandler) ListNodes(w http.ResponseWriter, r *http.Request) {
 		"count": len(nodes),
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	return c.JSON(http.StatusOK, response)
 }
 
 // UpdateNode updates an existing node
-func (h *NodeHandler) UpdateNode(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	nodeIDStr := vars["nodeId"]
+func (h *NodeHandler) UpdateNode(c echo.Context) error {
+	nodeIDStr := c.Param("nodeId")
 
 	nodeID, err := strconv.ParseUint(nodeIDStr, 10, 32)
 	if err != nil {
-		http.Error(w, "Invalid node ID", http.StatusBadRequest)
-		return
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid node ID")
 	}
 
 	var req models.NodeTemplateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
-		return
+	if err := c.Bind(&req); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
 	}
 
 	node, err := h.nodeService.UpdateNode(uint(nodeID), &req)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to update node: %v", err), http.StatusInternalServerError)
-		return
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to update node: %v", err))
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(node)
+	return c.JSON(http.StatusOK, node)
 }
 
 // DeleteNode deletes a node
-func (h *NodeHandler) DeleteNode(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	nodeIDStr := vars["nodeId"]
+func (h *NodeHandler) DeleteNode(c echo.Context) error {
+	nodeIDStr := c.Param("nodeId")
 
 	nodeID, err := strconv.ParseUint(nodeIDStr, 10, 32)
 	if err != nil {
-		http.Error(w, "Invalid node ID", http.StatusBadRequest)
-		return
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid node ID")
 	}
 
 	err = h.nodeService.DeleteNode(uint(nodeID))
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to delete node: %v", err), http.StatusInternalServerError)
-		return
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to delete node: %v", err))
 	}
 
 	response := map[string]string{
@@ -160,6 +138,5 @@ func (h *NodeHandler) DeleteNode(w http.ResponseWriter, r *http.Request) {
 		"message": fmt.Sprintf("Node %d deleted successfully", nodeID),
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	return c.JSON(http.StatusOK, response)
 }

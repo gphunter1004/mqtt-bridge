@@ -18,11 +18,12 @@ import (
 	"mqtt-bridge/services"
 	"mqtt-bridge/transport"
 
-	"github.com/gorilla/mux"
+	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
 )
 
 func main() {
-	log.Println("🚀 Starting MQTT Bridge Server with Multi-Transport Support...")
+	log.Println("🚀 Starting MQTT Bridge Server with Multi-Transport Support (Echo)...")
 
 	// ===================================================================
 	// 1. LOAD CONFIGURATION
@@ -89,11 +90,6 @@ func main() {
 	transportManager.RegisterTransport(transport.TransportTypeHTTP, httpTransport)
 	log.Println("✅ HTTP transport registered")
 
-	// Optional: Register WebSocket Transport
-	// wsTransport := transport.NewWebSocketTransport(30 * time.Second)
-	// transportManager.RegisterTransport(transport.TransportTypeWebSocket, wsTransport)
-	// log.Println("✅ WebSocket transport registered")
-
 	// Set default transport to MQTT
 	transportManager.SetDefaultTransport(transport.TransportTypeMQTT)
 	log.Printf("✅ Default transport set to: %s", transport.TransportTypeMQTT)
@@ -151,28 +147,33 @@ func main() {
 	log.Println("🎯 All handlers initialized successfully!")
 
 	// ===================================================================
-	// 8. SETUP HTTP ROUTER
+	// 8. SETUP ECHO SERVER
 	// ===================================================================
-	log.Println("🔧 Setting up HTTP Router...")
+	log.Println("🔧 Setting up Echo Server...")
 
-	router := setupRouter(apiHandler, orderHandler, nodeHandler, edgeHandler, actionHandler)
-	log.Println("✅ HTTP router configured")
+	e := echo.New()
+
+	// Echo 기본 설정
+	e.HideBanner = true
+	e.HidePort = true
+
+	// 글로벌 미들웨어
+	e.Use(middleware.Logger())
+	e.Use(middleware.Recover())
+	e.Use(middleware.CORS())
+	e.Use(middleware.RequestID())
+
+	// Setup routes
+	setupRoutes(e, apiHandler, orderHandler, nodeHandler, edgeHandler, actionHandler)
+	log.Println("✅ Echo routes configured")
 
 	// ===================================================================
-	// 9. START HTTP SERVER
+	// 9. START ECHO SERVER
 	// ===================================================================
-	server := &http.Server{
-		Addr:         ":8080",
-		Handler:      router,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
-
 	// Start server in goroutine
 	go func() {
 		log.Println("===================================================================")
-		log.Println("🚀 MQTT Bridge Server Started Successfully!")
+		log.Println("🚀 MQTT Bridge Server Started Successfully with Echo!")
 		log.Println("===================================================================")
 		log.Println("📡 Server Information:")
 		log.Printf("   • Address: http://localhost:8080")
@@ -188,8 +189,8 @@ func main() {
 		log.Println("   • Transport Management: GET /api/v1/transports")
 		log.Println("===================================================================")
 
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("❌ HTTP server failed: %v", err)
+		if err := e.Start(":8080"); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("❌ Echo server failed: %v", err)
 		}
 	}()
 
@@ -214,12 +215,12 @@ func main() {
 		log.Println("✅ Message service closed successfully")
 	}
 
-	// Shutdown HTTP server
-	log.Println("🔄 Shutting down HTTP server...")
-	if err := server.Shutdown(ctx); err != nil {
-		log.Printf("⚠️  HTTP server shutdown error: %v", err)
+	// Shutdown Echo server
+	log.Println("🔄 Shutting down Echo server...")
+	if err := e.Shutdown(ctx); err != nil {
+		log.Printf("⚠️  Echo server shutdown error: %v", err)
 	} else {
-		log.Println("✅ HTTP server shut down successfully")
+		log.Println("✅ Echo server shut down successfully")
 	}
 
 	log.Println("===================================================================")
@@ -228,215 +229,144 @@ func main() {
 }
 
 // ===================================================================
-// ROUTER SETUP FUNCTION
+// ECHO ROUTES SETUP FUNCTION
 // ===================================================================
-func setupRouter(apiHandler *handlers.APIHandler, orderHandler *handlers.OrderHandler, nodeHandler *handlers.NodeHandler, edgeHandler *handlers.EdgeHandler, actionHandler *handlers.ActionHandler) *mux.Router {
-	router := mux.NewRouter()
-
-	// Create API subrouter
-	api := router.PathPrefix("/api/v1").Subrouter()
+func setupRoutes(e *echo.Echo, apiHandler *handlers.APIHandler, orderHandler *handlers.OrderHandler, nodeHandler *handlers.NodeHandler, edgeHandler *handlers.EdgeHandler, actionHandler *handlers.ActionHandler) {
+	// Create API group
+	api := e.Group("/api/v1")
 
 	// ===================================================================
 	// HEALTH CHECK
 	// ===================================================================
-	api.HandleFunc("/health", apiHandler.HealthCheck).Methods("GET")
+	api.GET("/health", apiHandler.HealthCheck)
 
 	// ===================================================================
 	// ROBOT MANAGEMENT ENDPOINTS
 	// ===================================================================
-	api.HandleFunc("/robots", apiHandler.GetConnectedRobots).Methods("GET")
-	api.HandleFunc("/robots/{serialNumber}/state", apiHandler.GetRobotState).Methods("GET")
-	api.HandleFunc("/robots/{serialNumber}/health", apiHandler.GetRobotHealth).Methods("GET")
-	api.HandleFunc("/robots/{serialNumber}/capabilities", apiHandler.GetRobotCapabilities).Methods("GET")
-	api.HandleFunc("/robots/{serialNumber}/history", apiHandler.GetRobotConnectionHistory).Methods("GET")
+	api.GET("/robots", apiHandler.GetConnectedRobots)
+	api.GET("/robots/:serialNumber/state", apiHandler.GetRobotState)
+	api.GET("/robots/:serialNumber/health", apiHandler.GetRobotHealth)
+	api.GET("/robots/:serialNumber/capabilities", apiHandler.GetRobotCapabilities)
+	api.GET("/robots/:serialNumber/history", apiHandler.GetRobotConnectionHistory)
 
 	// ===================================================================
 	// BASIC ROBOT CONTROL (기존 API - MQTT 전용)
 	// ===================================================================
-	api.HandleFunc("/robots/{serialNumber}/order", apiHandler.SendOrder).Methods("POST")
-	api.HandleFunc("/robots/{serialNumber}/action", apiHandler.SendCustomAction).Methods("POST")
+	api.POST("/robots/:serialNumber/order", apiHandler.SendOrder)
+	api.POST("/robots/:serialNumber/action", apiHandler.SendCustomAction)
 
 	// ===================================================================
 	// MULTI-TRANSPORT ROBOT CONTROL ⭐ NEW
 	// ===================================================================
 
 	// Transport 선택 가능한 API
-	api.HandleFunc("/robots/{serialNumber}/order/transport", apiHandler.SendOrderWithTransport).Methods("POST")
-	api.HandleFunc("/robots/{serialNumber}/action/transport", apiHandler.SendCustomActionWithTransport).Methods("POST")
+	api.POST("/robots/:serialNumber/order/transport", apiHandler.SendOrderWithTransport)
+	api.POST("/robots/:serialNumber/action/transport", apiHandler.SendCustomActionWithTransport)
 
 	// 특정 Transport 전용 API
-	api.HandleFunc("/robots/{serialNumber}/order/http", apiHandler.SendOrderViaHTTP).Methods("POST")
-	api.HandleFunc("/robots/{serialNumber}/order/websocket", apiHandler.SendOrderViaWebSocket).Methods("POST")
-	api.HandleFunc("/robots/{serialNumber}/action/http", apiHandler.SendCustomActionViaHTTP).Methods("POST")
+	api.POST("/robots/:serialNumber/order/http", apiHandler.SendOrderViaHTTP)
+	api.POST("/robots/:serialNumber/order/websocket", apiHandler.SendOrderViaWebSocket)
+	api.POST("/robots/:serialNumber/action/http", apiHandler.SendCustomActionViaHTTP)
 
 	// ===================================================================
 	// ENHANCED ROBOT CONTROL - SIMPLE
 	// ===================================================================
 
 	// 기존 Simple API (MQTT 전용)
-	api.HandleFunc("/robots/{serialNumber}/inference", apiHandler.SendInferenceOrder).Methods("POST")
-	api.HandleFunc("/robots/{serialNumber}/trajectory", apiHandler.SendTrajectoryOrder).Methods("POST")
+	api.POST("/robots/:serialNumber/inference", apiHandler.SendInferenceOrder)
+	api.POST("/robots/:serialNumber/trajectory", apiHandler.SendTrajectoryOrder)
 
 	// Transport 선택 가능한 Simple API ⭐ NEW
-	api.HandleFunc("/robots/{serialNumber}/inference/transport", apiHandler.SendInferenceOrderWithTransport).Methods("POST")
-	api.HandleFunc("/robots/{serialNumber}/trajectory/transport", apiHandler.SendTrajectoryOrderWithTransport).Methods("POST")
+	api.POST("/robots/:serialNumber/inference/transport", apiHandler.SendInferenceOrderWithTransport)
+	api.POST("/robots/:serialNumber/trajectory/transport", apiHandler.SendTrajectoryOrderWithTransport)
 
 	// ===================================================================
 	// ENHANCED ROBOT CONTROL - WITH POSITION
 	// ===================================================================
-	api.HandleFunc("/robots/{serialNumber}/inference/with-position", apiHandler.SendInferenceOrderWithPosition).Methods("POST")
-	api.HandleFunc("/robots/{serialNumber}/trajectory/with-position", apiHandler.SendTrajectoryOrderWithPosition).Methods("POST")
+	api.POST("/robots/:serialNumber/inference/with-position", apiHandler.SendInferenceOrderWithPosition)
+	api.POST("/robots/:serialNumber/trajectory/with-position", apiHandler.SendTrajectoryOrderWithPosition)
 
 	// ===================================================================
 	// ENHANCED ROBOT CONTROL - FULLY CUSTOMIZABLE
 	// ===================================================================
-	api.HandleFunc("/robots/{serialNumber}/inference/custom", apiHandler.SendCustomInferenceOrder).Methods("POST")
-	api.HandleFunc("/robots/{serialNumber}/trajectory/custom", apiHandler.SendCustomTrajectoryOrder).Methods("POST")
-	api.HandleFunc("/robots/{serialNumber}/order/dynamic", apiHandler.SendDynamicOrder).Methods("POST")
+	api.POST("/robots/:serialNumber/inference/custom", apiHandler.SendCustomInferenceOrder)
+	api.POST("/robots/:serialNumber/trajectory/custom", apiHandler.SendCustomTrajectoryOrder)
+	api.POST("/robots/:serialNumber/order/dynamic", apiHandler.SendDynamicOrder)
 
 	// ===================================================================
 	// TRANSPORT MANAGEMENT ⭐ NEW
 	// ===================================================================
-	api.HandleFunc("/transports", apiHandler.GetAvailableTransports).Methods("GET")
-	api.HandleFunc("/transports/default", apiHandler.GetDefaultTransport).Methods("GET")
-	api.HandleFunc("/transports/default", apiHandler.SetDefaultTransport).Methods("PUT")
+	api.GET("/transports", apiHandler.GetAvailableTransports)
+	api.GET("/transports/default", apiHandler.GetDefaultTransport)
+	api.PUT("/transports/default", apiHandler.SetDefaultTransport)
 
 	// ===================================================================
 	// ORDER TEMPLATE MANAGEMENT
 	// ===================================================================
-	api.HandleFunc("/order-templates", orderHandler.CreateOrderTemplate).Methods("POST")
-	api.HandleFunc("/order-templates", orderHandler.ListOrderTemplates).Methods("GET")
-	api.HandleFunc("/order-templates/{id}", orderHandler.GetOrderTemplate).Methods("GET")
-	api.HandleFunc("/order-templates/{id}/details", orderHandler.GetOrderTemplateWithDetails).Methods("GET")
-	api.HandleFunc("/order-templates/{id}", orderHandler.UpdateOrderTemplate).Methods("PUT")
-	api.HandleFunc("/order-templates/{id}", orderHandler.DeleteOrderTemplate).Methods("DELETE")
+	api.POST("/order-templates", orderHandler.CreateOrderTemplate)
+	api.GET("/order-templates", orderHandler.ListOrderTemplates)
+	api.GET("/order-templates/:id", orderHandler.GetOrderTemplate)
+	api.GET("/order-templates/:id/details", orderHandler.GetOrderTemplateWithDetails)
+	api.PUT("/order-templates/:id", orderHandler.UpdateOrderTemplate)
+	api.DELETE("/order-templates/:id", orderHandler.DeleteOrderTemplate)
 
 	// Template Association Management
-	api.HandleFunc("/order-templates/{id}/associate-nodes", orderHandler.AssociateNodes).Methods("POST")
-	api.HandleFunc("/order-templates/{id}/associate-edges", orderHandler.AssociateEdges).Methods("POST")
+	api.POST("/order-templates/:id/associate-nodes", orderHandler.AssociateNodes)
+	api.POST("/order-templates/:id/associate-edges", orderHandler.AssociateEdges)
 
 	// ===================================================================
 	// ORDER EXECUTION
 	// ===================================================================
-	api.HandleFunc("/orders/execute", orderHandler.ExecuteOrder).Methods("POST")
-	api.HandleFunc("/orders/execute/template/{id}/robot/{serialNumber}", orderHandler.ExecuteOrderByTemplate).Methods("POST")
-	api.HandleFunc("/orders", orderHandler.ListOrderExecutions).Methods("GET")
-	api.HandleFunc("/orders/{orderId}", orderHandler.GetOrderExecution).Methods("GET")
-	api.HandleFunc("/orders/{orderId}/cancel", orderHandler.CancelOrder).Methods("POST")
+	api.POST("/orders/execute", orderHandler.ExecuteOrder)
+	api.POST("/orders/execute/template/:id/robot/:serialNumber", orderHandler.ExecuteOrderByTemplate)
+	api.GET("/orders", orderHandler.ListOrderExecutions)
+	api.GET("/orders/:orderId", orderHandler.GetOrderExecution)
+	api.POST("/orders/:orderId/cancel", orderHandler.CancelOrder)
 
 	// Robot-specific order endpoints
-	api.HandleFunc("/robots/{serialNumber}/orders", orderHandler.GetRobotOrderExecutions).Methods("GET")
+	api.GET("/robots/:serialNumber/orders", orderHandler.GetRobotOrderExecutions)
 
 	// ===================================================================
 	// NODE MANAGEMENT
 	// ===================================================================
-	api.HandleFunc("/nodes", nodeHandler.CreateNode).Methods("POST")
-	api.HandleFunc("/nodes", nodeHandler.ListNodes).Methods("GET")
-	api.HandleFunc("/nodes/{nodeId}", nodeHandler.GetNode).Methods("GET")
-	api.HandleFunc("/nodes/{nodeId}", nodeHandler.UpdateNode).Methods("PUT")
-	api.HandleFunc("/nodes/{nodeId}", nodeHandler.DeleteNode).Methods("DELETE")
-	api.HandleFunc("/nodes/by-node-id/{nodeId}", nodeHandler.GetNodeByNodeID).Methods("GET")
+	api.POST("/nodes", nodeHandler.CreateNode)
+	api.GET("/nodes", nodeHandler.ListNodes)
+	api.GET("/nodes/:nodeId", nodeHandler.GetNode)
+	api.PUT("/nodes/:nodeId", nodeHandler.UpdateNode)
+	api.DELETE("/nodes/:nodeId", nodeHandler.DeleteNode)
+	api.GET("/nodes/by-node-id/:nodeId", nodeHandler.GetNodeByNodeID)
 
 	// ===================================================================
 	// EDGE MANAGEMENT
 	// ===================================================================
-	api.HandleFunc("/edges", edgeHandler.CreateEdge).Methods("POST")
-	api.HandleFunc("/edges", edgeHandler.ListEdges).Methods("GET")
-	api.HandleFunc("/edges/{edgeId}", edgeHandler.GetEdge).Methods("GET")
-	api.HandleFunc("/edges/{edgeId}", edgeHandler.UpdateEdge).Methods("PUT")
-	api.HandleFunc("/edges/{edgeId}", edgeHandler.DeleteEdge).Methods("DELETE")
-	api.HandleFunc("/edges/by-edge-id/{edgeId}", edgeHandler.GetEdgeByEdgeID).Methods("GET")
+	api.POST("/edges", edgeHandler.CreateEdge)
+	api.GET("/edges", edgeHandler.ListEdges)
+	api.GET("/edges/:edgeId", edgeHandler.GetEdge)
+	api.PUT("/edges/:edgeId", edgeHandler.UpdateEdge)
+	api.DELETE("/edges/:edgeId", edgeHandler.DeleteEdge)
+	api.GET("/edges/by-edge-id/:edgeId", edgeHandler.GetEdgeByEdgeID)
 
 	// ===================================================================
 	// ACTION TEMPLATE MANAGEMENT
 	// ===================================================================
-	api.HandleFunc("/actions", actionHandler.CreateActionTemplate).Methods("POST")
-	api.HandleFunc("/actions", actionHandler.ListActionTemplates).Methods("GET")
-	api.HandleFunc("/actions/{actionId}", actionHandler.GetActionTemplate).Methods("GET")
-	api.HandleFunc("/actions/{actionId}", actionHandler.UpdateActionTemplate).Methods("PUT")
-	api.HandleFunc("/actions/{actionId}", actionHandler.DeleteActionTemplate).Methods("DELETE")
-	api.HandleFunc("/actions/by-action-id/{actionId}", actionHandler.GetActionTemplateByActionID).Methods("GET")
-	api.HandleFunc("/actions/{actionId}/clone", actionHandler.CloneActionTemplate).Methods("POST")
+	api.POST("/actions", actionHandler.CreateActionTemplate)
+	api.GET("/actions", actionHandler.ListActionTemplates)
+	api.GET("/actions/:actionId", actionHandler.GetActionTemplate)
+	api.PUT("/actions/:actionId", actionHandler.UpdateActionTemplate)
+	api.DELETE("/actions/:actionId", actionHandler.DeleteActionTemplate)
+	api.GET("/actions/by-action-id/:actionId", actionHandler.GetActionTemplateByActionID)
+	api.POST("/actions/:actionId/clone", actionHandler.CloneActionTemplate)
 
 	// Action Library Management
-	api.HandleFunc("/actions/library", actionHandler.CreateActionLibrary).Methods("POST")
-	api.HandleFunc("/actions/library", actionHandler.GetActionLibrary).Methods("GET")
+	api.POST("/actions/library", actionHandler.CreateActionLibrary)
+	api.GET("/actions/library", actionHandler.GetActionLibrary)
 
 	// Action Validation and Bulk Operations
-	api.HandleFunc("/actions/validate", actionHandler.ValidateActionTemplate).Methods("POST")
-	api.HandleFunc("/actions/bulk/delete", actionHandler.BulkDeleteActionTemplates).Methods("POST")
-	api.HandleFunc("/actions/bulk/clone", actionHandler.BulkCloneActionTemplates).Methods("POST")
+	api.POST("/actions/validate", actionHandler.ValidateActionTemplate)
+	api.POST("/actions/bulk/delete", actionHandler.BulkDeleteActionTemplates)
+	api.POST("/actions/bulk/clone", actionHandler.BulkCloneActionTemplates)
 
 	// Action Import/Export
-	api.HandleFunc("/actions/export", actionHandler.ExportActionTemplates).Methods("POST")
-	api.HandleFunc("/actions/import", actionHandler.ImportActionTemplates).Methods("POST")
-
-	// ===================================================================
-	// MIDDLEWARE
-	// ===================================================================
-	router.Use(corsMiddleware)
-	router.Use(loggingMiddleware)
-
-	return router
-}
-
-// ===================================================================
-// MIDDLEWARE FUNCTIONS
-// ===================================================================
-
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
-		w.Header().Set("Access-Control-Max-Age", "86400")
-
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	})
-}
-
-func loggingMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-
-		// Create a response writer wrapper to capture status code
-		lrw := &loggingResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-
-		next.ServeHTTP(lrw, r)
-
-		duration := time.Since(start)
-
-		// Log with different levels based on status code
-		logLevel := "INFO"
-		if lrw.statusCode >= 400 && lrw.statusCode < 500 {
-			logLevel = "WARN"
-		} else if lrw.statusCode >= 500 {
-			logLevel = "ERROR"
-		}
-
-		log.Printf("[%s] %s %s %s %d %v",
-			logLevel,
-			r.Method,
-			r.RequestURI,
-			r.RemoteAddr,
-			lrw.statusCode,
-			duration,
-		)
-	})
-}
-
-// loggingResponseWriter wraps http.ResponseWriter to capture status code
-type loggingResponseWriter struct {
-	http.ResponseWriter
-	statusCode int
-}
-
-func (lrw *loggingResponseWriter) WriteHeader(code int) {
-	lrw.statusCode = code
-	lrw.ResponseWriter.WriteHeader(code)
+	api.POST("/actions/export", actionHandler.ExportActionTemplates)
+	api.POST("/actions/import", actionHandler.ImportActionTemplates)
 }
