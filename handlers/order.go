@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -9,7 +8,7 @@ import (
 	"mqtt-bridge/models"
 	"mqtt-bridge/services"
 
-	"github.com/gorilla/mux"
+	"github.com/labstack/echo/v4"
 )
 
 type OrderHandler struct {
@@ -25,70 +24,58 @@ func NewOrderHandler(orderService *services.OrderService) *OrderHandler {
 // Order Template Management
 
 // CreateOrderTemplate creates a new order template
-func (h *OrderHandler) CreateOrderTemplate(w http.ResponseWriter, r *http.Request) {
+func (h *OrderHandler) CreateOrderTemplate(c echo.Context) error {
 	var req models.CreateOrderTemplateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
-		return
+	if err := c.Bind(&req); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
 	}
 
 	template, err := h.orderService.CreateOrderTemplate(&req)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create order template: %v", err), http.StatusInternalServerError)
-		return
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to create order template: %v", err))
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(template)
+	return c.JSON(http.StatusCreated, template)
 }
 
 // GetOrderTemplate retrieves a specific order template
-func (h *OrderHandler) GetOrderTemplate(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	idStr := vars["id"]
+func (h *OrderHandler) GetOrderTemplate(c echo.Context) error {
+	idStr := c.Param("id")
 
 	id, err := strconv.ParseUint(idStr, 10, 32)
 	if err != nil {
-		http.Error(w, "Invalid template ID", http.StatusBadRequest)
-		return
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid template ID")
 	}
 
 	template, err := h.orderService.GetOrderTemplate(uint(id))
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get order template: %v", err), http.StatusInternalServerError)
-		return
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to get order template: %v", err))
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(template)
+	return c.JSON(http.StatusOK, template)
 }
 
 // GetOrderTemplateWithDetails retrieves a template with associated nodes and edges
-func (h *OrderHandler) GetOrderTemplateWithDetails(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	idStr := vars["id"]
+func (h *OrderHandler) GetOrderTemplateWithDetails(c echo.Context) error {
+	idStr := c.Param("id")
 
 	id, err := strconv.ParseUint(idStr, 10, 32)
 	if err != nil {
-		http.Error(w, "Invalid template ID", http.StatusBadRequest)
-		return
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid template ID")
 	}
 
 	templateDetails, err := h.orderService.GetOrderTemplateWithDetails(uint(id))
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get order template details: %v", err), http.StatusInternalServerError)
-		return
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to get order template details: %v", err))
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(templateDetails)
+	return c.JSON(http.StatusOK, templateDetails)
 }
 
 // ListOrderTemplates retrieves all order templates
-func (h *OrderHandler) ListOrderTemplates(w http.ResponseWriter, r *http.Request) {
-	limitStr := r.URL.Query().Get("limit")
-	offsetStr := r.URL.Query().Get("offset")
+func (h *OrderHandler) ListOrderTemplates(c echo.Context) error {
+	limitStr := c.QueryParam("limit")
+	offsetStr := c.QueryParam("offset")
 
 	limit := 10 // default limit
 	if limitStr != "" {
@@ -106,8 +93,7 @@ func (h *OrderHandler) ListOrderTemplates(w http.ResponseWriter, r *http.Request
 
 	templates, err := h.orderService.ListOrderTemplates(limit, offset)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to list order templates: %v", err), http.StatusInternalServerError)
-		return
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to list order templates: %v", err))
 	}
 
 	response := map[string]interface{}{
@@ -115,52 +101,43 @@ func (h *OrderHandler) ListOrderTemplates(w http.ResponseWriter, r *http.Request
 		"count":     len(templates),
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	return c.JSON(http.StatusOK, response)
 }
 
 // UpdateOrderTemplate updates an existing order template
-func (h *OrderHandler) UpdateOrderTemplate(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	idStr := vars["id"]
+func (h *OrderHandler) UpdateOrderTemplate(c echo.Context) error {
+	idStr := c.Param("id")
 
 	id, err := strconv.ParseUint(idStr, 10, 32)
 	if err != nil {
-		http.Error(w, "Invalid template ID", http.StatusBadRequest)
-		return
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid template ID")
 	}
 
 	var req models.CreateOrderTemplateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
-		return
+	if err := c.Bind(&req); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
 	}
 
 	template, err := h.orderService.UpdateOrderTemplate(uint(id), &req)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to update order template: %v", err), http.StatusInternalServerError)
-		return
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to update order template: %v", err))
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(template)
+	return c.JSON(http.StatusOK, template)
 }
 
 // DeleteOrderTemplate deletes an order template
-func (h *OrderHandler) DeleteOrderTemplate(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	idStr := vars["id"]
+func (h *OrderHandler) DeleteOrderTemplate(c echo.Context) error {
+	idStr := c.Param("id")
 
 	id, err := strconv.ParseUint(idStr, 10, 32)
 	if err != nil {
-		http.Error(w, "Invalid template ID", http.StatusBadRequest)
-		return
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid template ID")
 	}
 
 	err = h.orderService.DeleteOrderTemplate(uint(id))
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to delete order template: %v", err), http.StatusInternalServerError)
-		return
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to delete order template: %v", err))
 	}
 
 	response := map[string]string{
@@ -168,56 +145,46 @@ func (h *OrderHandler) DeleteOrderTemplate(w http.ResponseWriter, r *http.Reques
 		"message": fmt.Sprintf("Order template %d deleted successfully", id),
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	return c.JSON(http.StatusOK, response)
 }
 
 // Order Execution
 
 // ExecuteOrder executes an order template for a specific robot
-func (h *OrderHandler) ExecuteOrder(w http.ResponseWriter, r *http.Request) {
+func (h *OrderHandler) ExecuteOrder(c echo.Context) error {
 	var req models.ExecuteOrderRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
-		return
+	if err := c.Bind(&req); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
 	}
 
 	execution, err := h.orderService.ExecuteOrder(&req)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to execute order: %v", err), http.StatusInternalServerError)
-		return
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to execute order: %v", err))
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(execution)
+	return c.JSON(http.StatusCreated, execution)
 }
 
 // ExecuteOrderByTemplate executes an order template by template ID
-func (h *OrderHandler) ExecuteOrderByTemplate(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	idStr := vars["id"]
-	serialNumber := vars["serialNumber"]
+func (h *OrderHandler) ExecuteOrderByTemplate(c echo.Context) error {
+	idStr := c.Param("id")
+	serialNumber := c.Param("serialNumber")
 
 	if serialNumber == "" {
-		http.Error(w, "Serial number is required", http.StatusBadRequest)
-		return
+		return echo.NewHTTPError(http.StatusBadRequest, "Serial number is required")
 	}
 
 	id, err := strconv.ParseUint(idStr, 10, 32)
 	if err != nil {
-		http.Error(w, "Invalid template ID", http.StatusBadRequest)
-		return
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid template ID")
 	}
 
 	var paramOverrides map[string]interface{}
-	if r.Body != http.NoBody {
-		var reqBody struct {
-			ParameterOverrides map[string]interface{} `json:"parameterOverrides"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&reqBody); err == nil {
-			paramOverrides = reqBody.ParameterOverrides
-		}
+	var reqBody struct {
+		ParameterOverrides map[string]interface{} `json:"parameterOverrides"`
+	}
+	if err := c.Bind(&reqBody); err == nil {
+		paramOverrides = reqBody.ParameterOverrides
 	}
 
 	req := models.ExecuteOrderRequest{
@@ -228,40 +195,33 @@ func (h *OrderHandler) ExecuteOrderByTemplate(w http.ResponseWriter, r *http.Req
 
 	execution, err := h.orderService.ExecuteOrder(&req)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to execute order: %v", err), http.StatusInternalServerError)
-		return
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to execute order: %v", err))
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(execution)
+	return c.JSON(http.StatusCreated, execution)
 }
 
 // GetOrderExecution retrieves a specific order execution
-func (h *OrderHandler) GetOrderExecution(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	orderID := vars["orderId"]
+func (h *OrderHandler) GetOrderExecution(c echo.Context) error {
+	orderID := c.Param("orderId")
 
 	if orderID == "" {
-		http.Error(w, "Order ID is required", http.StatusBadRequest)
-		return
+		return echo.NewHTTPError(http.StatusBadRequest, "Order ID is required")
 	}
 
 	execution, err := h.orderService.GetOrderExecution(orderID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get order execution: %v", err), http.StatusInternalServerError)
-		return
+		return echo.NewHTTPError(http.StatusNotFound, fmt.Sprintf("Failed to get order execution: %v", err))
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(execution)
+	return c.JSON(http.StatusOK, execution)
 }
 
 // ListOrderExecutions retrieves order executions
-func (h *OrderHandler) ListOrderExecutions(w http.ResponseWriter, r *http.Request) {
-	serialNumber := r.URL.Query().Get("serialNumber")
-	limitStr := r.URL.Query().Get("limit")
-	offsetStr := r.URL.Query().Get("offset")
+func (h *OrderHandler) ListOrderExecutions(c echo.Context) error {
+	serialNumber := c.QueryParam("serialNumber")
+	limitStr := c.QueryParam("limit")
+	offsetStr := c.QueryParam("offset")
 
 	limit := 20 // default limit
 	if limitStr != "" {
@@ -279,8 +239,7 @@ func (h *OrderHandler) ListOrderExecutions(w http.ResponseWriter, r *http.Reques
 
 	executions, err := h.orderService.ListOrderExecutions(serialNumber, limit, offset)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to list order executions: %v", err), http.StatusInternalServerError)
-		return
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to list order executions: %v", err))
 	}
 
 	response := map[string]interface{}{
@@ -288,22 +247,19 @@ func (h *OrderHandler) ListOrderExecutions(w http.ResponseWriter, r *http.Reques
 		"count":      len(executions),
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	return c.JSON(http.StatusOK, response)
 }
 
 // GetRobotOrderExecutions retrieves order executions for a specific robot
-func (h *OrderHandler) GetRobotOrderExecutions(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	serialNumber := vars["serialNumber"]
+func (h *OrderHandler) GetRobotOrderExecutions(c echo.Context) error {
+	serialNumber := c.Param("serialNumber")
 
 	if serialNumber == "" {
-		http.Error(w, "Serial number is required", http.StatusBadRequest)
-		return
+		return echo.NewHTTPError(http.StatusBadRequest, "Serial number is required")
 	}
 
-	limitStr := r.URL.Query().Get("limit")
-	offsetStr := r.URL.Query().Get("offset")
+	limitStr := c.QueryParam("limit")
+	offsetStr := c.QueryParam("offset")
 
 	limit := 20 // default limit
 	if limitStr != "" {
@@ -321,8 +277,7 @@ func (h *OrderHandler) GetRobotOrderExecutions(w http.ResponseWriter, r *http.Re
 
 	executions, err := h.orderService.ListOrderExecutions(serialNumber, limit, offset)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get robot order executions: %v", err), http.StatusInternalServerError)
-		return
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to get robot order executions: %v", err))
 	}
 
 	response := map[string]interface{}{
@@ -331,24 +286,20 @@ func (h *OrderHandler) GetRobotOrderExecutions(w http.ResponseWriter, r *http.Re
 		"count":        len(executions),
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	return c.JSON(http.StatusOK, response)
 }
 
 // CancelOrder cancels an order execution
-func (h *OrderHandler) CancelOrder(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	orderID := vars["orderId"]
+func (h *OrderHandler) CancelOrder(c echo.Context) error {
+	orderID := c.Param("orderId")
 
 	if orderID == "" {
-		http.Error(w, "Order ID is required", http.StatusBadRequest)
-		return
+		return echo.NewHTTPError(http.StatusBadRequest, "Order ID is required")
 	}
 
 	err := h.orderService.CancelOrder(orderID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to cancel order: %v", err), http.StatusInternalServerError)
-		return
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to cancel order: %v", err))
 	}
 
 	response := map[string]string{
@@ -356,33 +307,28 @@ func (h *OrderHandler) CancelOrder(w http.ResponseWriter, r *http.Request) {
 		"message": fmt.Sprintf("Order %s cancelled successfully", orderID),
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	return c.JSON(http.StatusOK, response)
 }
 
 // Template Association Management
 
 // AssociateNodes associates existing nodes with a template
-func (h *OrderHandler) AssociateNodes(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	idStr := vars["id"]
+func (h *OrderHandler) AssociateNodes(c echo.Context) error {
+	idStr := c.Param("id")
 
 	id, err := strconv.ParseUint(idStr, 10, 32)
 	if err != nil {
-		http.Error(w, "Invalid template ID", http.StatusBadRequest)
-		return
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid template ID")
 	}
 
 	var req models.AssociateNodesRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
-		return
+	if err := c.Bind(&req); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
 	}
 
 	err = h.orderService.AssociateNodes(uint(id), &req)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to associate nodes: %v", err), http.StatusInternalServerError)
-		return
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to associate nodes: %v", err))
 	}
 
 	response := map[string]string{
@@ -390,31 +336,26 @@ func (h *OrderHandler) AssociateNodes(w http.ResponseWriter, r *http.Request) {
 		"message": fmt.Sprintf("Nodes associated successfully with template %d", id),
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	return c.JSON(http.StatusOK, response)
 }
 
 // AssociateEdges associates existing edges with a template
-func (h *OrderHandler) AssociateEdges(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	idStr := vars["id"]
+func (h *OrderHandler) AssociateEdges(c echo.Context) error {
+	idStr := c.Param("id")
 
 	id, err := strconv.ParseUint(idStr, 10, 32)
 	if err != nil {
-		http.Error(w, "Invalid template ID", http.StatusBadRequest)
-		return
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid template ID")
 	}
 
 	var req models.AssociateEdgesRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
-		return
+	if err := c.Bind(&req); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
 	}
 
 	err = h.orderService.AssociateEdges(uint(id), &req)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to associate edges: %v", err), http.StatusInternalServerError)
-		return
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to associate edges: %v", err))
 	}
 
 	response := map[string]string{
@@ -422,6 +363,5 @@ func (h *OrderHandler) AssociateEdges(w http.ResponseWriter, r *http.Request) {
 		"message": fmt.Sprintf("Edges associated successfully with template %d", id),
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	return c.JSON(http.StatusOK, response)
 }

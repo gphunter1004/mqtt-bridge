@@ -10,7 +10,7 @@ import (
 )
 
 // ===================================================================
-// TRANSPORT MANAGEMENT APIs ⭐ NEW
+// TRANSPORT MANAGEMENT APIs
 // ===================================================================
 
 // GetAvailableTransports - 사용 가능한 Transport 목록 조회

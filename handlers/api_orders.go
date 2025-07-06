@@ -12,7 +12,7 @@ import (
 )
 
 // ===================================================================
-// BASIC ORDER AND ACTION METHODS (기존 메소드들 - MQTT 전용)
+// BASIC ORDER AND ACTION METHODS (기본 API - Default Transport 사용)
 // ===================================================================
 
 func (h *APIHandler) SendOrder(c echo.Context) error {
@@ -35,8 +35,7 @@ func (h *APIHandler) SendOrder(c echo.Context) error {
 	response := utils.SuccessResponse(
 		fmt.Sprintf("Order sent successfully to robot %s", serialNumber),
 		map[string]interface{}{
-			"orderId":   orderRequest.OrderID,
-			"transport": "mqtt",
+			"orderId": orderRequest.OrderID,
 		},
 	)
 	return c.JSON(http.StatusOK, response)
@@ -62,22 +61,21 @@ func (h *APIHandler) SendCustomAction(c echo.Context) error {
 	response := utils.SuccessResponse(
 		fmt.Sprintf("Custom action sent successfully to robot %s", serialNumber),
 		map[string]interface{}{
-			"actionId":  utils.GenerateActionID(),
-			"transport": "mqtt",
+			"actionId": utils.GenerateActionID(),
 		},
 	)
 	return c.JSON(http.StatusOK, response)
 }
 
 // ===================================================================
-// TRANSPORT-AWARE ORDER METHODS ⭐ NEW
+// TRANSPORT-AWARE ORDER METHODS
 // ===================================================================
 
 // SendOrderWithTransport - Transport 선택 가능한 주문 전송
 func (h *APIHandler) SendOrderWithTransport(c echo.Context) error {
 	serialNumber := c.Param("serialNumber")
-
 	transportStr := c.QueryParam("transport")
+
 	var transportType transport.TransportType = transport.TransportTypeMQTT // 기본값
 
 	switch transportStr {
@@ -158,14 +156,14 @@ func (h *APIHandler) SendOrderViaWebSocket(c echo.Context) error {
 }
 
 // ===================================================================
-// TRANSPORT-AWARE CUSTOM ACTION METHODS ⭐ NEW
+// TRANSPORT-AWARE CUSTOM ACTION METHODS
 // ===================================================================
 
 // SendCustomActionWithTransport - Transport 선택 가능한 Custom Action
 func (h *APIHandler) SendCustomActionWithTransport(c echo.Context) error {
 	serialNumber := c.Param("serialNumber")
-
 	transportStr := c.QueryParam("transport")
+
 	var transportType transport.TransportType = transport.TransportTypeMQTT
 
 	switch transportStr {
@@ -218,114 +216,5 @@ func (h *APIHandler) SendCustomActionViaHTTP(c echo.Context) error {
 		"actions_count": len(actionRequest.Actions),
 	}
 
-	return c.JSON(http.StatusOK, response)
-}
-
-// ===================================================================
-// CUSTOM INFERENCE/TRAJECTORY ORDERS ⭐ NEW
-// ===================================================================
-
-// SendCustomInferenceOrder - 완전 커스터마이징 추론 주문
-func (h *APIHandler) SendCustomInferenceOrder(c echo.Context) error {
-	serialNumber := c.Param("serialNumber")
-
-	var request services.CustomInferenceOrderRequest
-	if err := c.Bind(&request); err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
-	}
-
-	request.SerialNumber = serialNumber
-
-	if err := utils.ValidateRequired(map[string]string{
-		"inferenceName": request.InferenceName,
-	}); err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
-	}
-
-	err := h.bridgeService.CreateCustomInferenceOrder(&request)
-	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to send custom inference order: %v", err))
-	}
-
-	response := utils.SuccessResponse(
-		fmt.Sprintf("Custom inference order sent successfully to robot %s", serialNumber),
-		map[string]interface{}{
-			"action":            "custom_inference",
-			"inference_name":    request.InferenceName,
-			"action_type":       request.ActionType,
-			"custom_parameters": request.CustomParameters,
-			"order_id":          utils.GenerateOrderID(),
-		},
-	)
-	return c.JSON(http.StatusOK, response)
-}
-
-// SendCustomTrajectoryOrder - 완전 커스터마이징 궤적 주문
-func (h *APIHandler) SendCustomTrajectoryOrder(c echo.Context) error {
-	serialNumber := c.Param("serialNumber")
-
-	var request services.CustomTrajectoryOrderRequest
-	if err := c.Bind(&request); err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
-	}
-
-	request.SerialNumber = serialNumber
-
-	if err := utils.ValidateRequired(map[string]string{
-		"trajectoryName": request.TrajectoryName,
-		"arm":            request.Arm,
-	}); err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
-	}
-
-	err := h.bridgeService.CreateCustomTrajectoryOrder(&request)
-	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to send custom trajectory order: %v", err))
-	}
-
-	response := utils.SuccessResponse(
-		fmt.Sprintf("Custom trajectory order sent successfully to robot %s", serialNumber),
-		map[string]interface{}{
-			"action":            "custom_trajectory",
-			"trajectory_name":   request.TrajectoryName,
-			"arm":               request.Arm,
-			"action_type":       request.ActionType,
-			"custom_parameters": request.CustomParameters,
-			"order_id":          utils.GenerateOrderID(),
-		},
-	)
-	return c.JSON(http.StatusOK, response)
-}
-
-// SendDynamicOrder - 완전히 자유로운 다중 노드/엣지 워크플로우
-func (h *APIHandler) SendDynamicOrder(c echo.Context) error {
-	serialNumber := c.Param("serialNumber")
-
-	var request services.DynamicOrderRequest
-	if err := c.Bind(&request); err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
-	}
-
-	request.SerialNumber = serialNumber
-
-	if len(request.Nodes) == 0 {
-		return echo.NewHTTPError(http.StatusBadRequest, "At least one node is required")
-	}
-
-	err := h.bridgeService.CreateDynamicOrder(&request)
-	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to send dynamic order: %v", err))
-	}
-
-	response := utils.SuccessResponse(
-		fmt.Sprintf("Dynamic order sent successfully to robot %s", serialNumber),
-		map[string]interface{}{
-			"action":          "dynamic_order",
-			"nodes_count":     len(request.Nodes),
-			"edges_count":     len(request.Edges),
-			"order_update_id": request.OrderUpdateID,
-			"order_id":        utils.GenerateOrderID(),
-		},
-	)
 	return c.JSON(http.StatusOK, response)
 }

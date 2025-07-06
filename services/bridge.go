@@ -29,7 +29,7 @@ func NewBridgeService(db *database.Database, redisClient *redis.RedisClient, mes
 }
 
 // ===================================================================
-// BASIC SERVICE METHODS (기존 메소드들)
+// BASIC SERVICE METHODS
 // ===================================================================
 
 func (bs *BridgeService) GetRobotState(serialNumber string) (*models.StateMessage, error) {
@@ -128,16 +128,26 @@ func (bs *BridgeService) MonitorRobotHealth(serialNumber string) (*RobotHealthSt
 }
 
 // ===================================================================
-// UPDATED ORDER SENDING METHODS (업데이트된 주문 전송 메소드들)
+// UNIFIED ORDER SENDING METHODS
 // ===================================================================
 
-// 기존 메소드 (MQTT 전용, 호환성 유지)
 func (bs *BridgeService) SendOrderToRobot(serialNumber string, orderData OrderRequest) error {
-	return bs.SendOrderToRobotWithTransport(serialNumber, orderData, transport.TransportTypeMQTT)
+	return bs.sendOrderWithTransport(serialNumber, orderData, bs.messageService.GetDefaultTransport())
 }
 
-// 새로운 메소드: Transport 타입 지정 가능 ⭐ NEW
 func (bs *BridgeService) SendOrderToRobotWithTransport(serialNumber string, orderData OrderRequest, transportType transport.TransportType) error {
+	return bs.sendOrderWithTransport(serialNumber, orderData, transportType)
+}
+
+func (bs *BridgeService) SendOrderToRobotViaHTTP(serialNumber string, orderData OrderRequest) error {
+	return bs.sendOrderWithTransport(serialNumber, orderData, transport.TransportTypeHTTP)
+}
+
+func (bs *BridgeService) SendOrderToRobotViaWebSocket(serialNumber string, orderData OrderRequest) error {
+	return bs.sendOrderWithTransport(serialNumber, orderData, transport.TransportTypeWebSocket)
+}
+
+func (bs *BridgeService) sendOrderWithTransport(serialNumber string, orderData OrderRequest, transportType transport.TransportType) error {
 	if !bs.redis.IsRobotOnline(serialNumber) {
 		return fmt.Errorf("robot %s is not online", serialNumber)
 	}
@@ -163,27 +173,23 @@ func (bs *BridgeService) SendOrderToRobotWithTransport(serialNumber string, orde
 	return nil
 }
 
-// HTTP로 주문 전송 ⭐ NEW
-func (bs *BridgeService) SendOrderToRobotViaHTTP(serialNumber string, orderData OrderRequest) error {
-	return bs.SendOrderToRobotWithTransport(serialNumber, orderData, transport.TransportTypeHTTP)
-}
-
-// WebSocket으로 주문 전송 ⭐ NEW
-func (bs *BridgeService) SendOrderToRobotViaWebSocket(serialNumber string, orderData OrderRequest) error {
-	return bs.SendOrderToRobotWithTransport(serialNumber, orderData, transport.TransportTypeWebSocket)
-}
-
 // ===================================================================
-// UPDATED CUSTOM ACTION METHODS (업데이트된 커스텀 액션 메소드들)
+// UNIFIED CUSTOM ACTION METHODS
 // ===================================================================
 
-// 기존 메소드 (MQTT 전용, 호환성 유지)
 func (bs *BridgeService) SendCustomAction(serialNumber string, actionRequest CustomActionRequest) error {
-	return bs.SendCustomActionWithTransport(serialNumber, actionRequest, transport.TransportTypeMQTT)
+	return bs.sendCustomActionWithTransport(serialNumber, actionRequest, bs.messageService.GetDefaultTransport())
 }
 
-// 새로운 메소드: Transport 타입 지정 가능 ⭐ NEW
 func (bs *BridgeService) SendCustomActionWithTransport(serialNumber string, actionRequest CustomActionRequest, transportType transport.TransportType) error {
+	return bs.sendCustomActionWithTransport(serialNumber, actionRequest, transportType)
+}
+
+func (bs *BridgeService) SendCustomActionViaHTTP(serialNumber string, actionRequest CustomActionRequest) error {
+	return bs.sendCustomActionWithTransport(serialNumber, actionRequest, transport.TransportTypeHTTP)
+}
+
+func (bs *BridgeService) sendCustomActionWithTransport(serialNumber string, actionRequest CustomActionRequest, transportType transport.TransportType) error {
 	if !bs.redis.IsRobotOnline(serialNumber) {
 		return fmt.Errorf("robot %s is not online", serialNumber)
 	}
@@ -206,55 +212,53 @@ func (bs *BridgeService) SendCustomActionWithTransport(serialNumber string, acti
 	return nil
 }
 
-// HTTP로 커스텀 액션 전송 ⭐ NEW
-func (bs *BridgeService) SendCustomActionViaHTTP(serialNumber string, actionRequest CustomActionRequest) error {
-	return bs.SendCustomActionWithTransport(serialNumber, actionRequest, transport.TransportTypeHTTP)
+// ===================================================================
+// ENHANCED ORDER CREATION WITH UNIFIED TRANSPORT
+// ===================================================================
+
+func (bs *BridgeService) CreateInferenceOrder(serialNumber, inferenceName string) error {
+	return bs.createEnhancedOrder(serialNumber, "inference", map[string]interface{}{
+		"inferenceName": inferenceName,
+	}, bs.messageService.GetDefaultTransport())
 }
 
-// ===================================================================
-// ENHANCED ORDER CREATION WITH TRANSPORT SUPPORT ⭐ NEW
-// ===================================================================
-
-// 기존 메소드들 (MQTT 전용)
-func (bs *BridgeService) CreateInferenceOrder(serialNumber, inferenceName string) error {
-	return bs.CreateInferenceOrderWithTransport(serialNumber, inferenceName, transport.TransportTypeMQTT)
+func (bs *BridgeService) CreateInferenceOrderWithTransport(serialNumber, inferenceName string, transportType transport.TransportType) error {
+	return bs.createEnhancedOrder(serialNumber, "inference", map[string]interface{}{
+		"inferenceName": inferenceName,
+	}, transportType)
 }
 
 func (bs *BridgeService) CreateTrajectoryOrder(serialNumber, trajectoryName, arm string) error {
-	return bs.CreateTrajectoryOrderWithTransport(serialNumber, trajectoryName, arm, transport.TransportTypeMQTT)
-}
-
-// 새로운 메소드들: Transport 지정 가능 ⭐ NEW
-func (bs *BridgeService) CreateInferenceOrderWithTransport(serialNumber, inferenceName string, transportType transport.TransportType) error {
-	return bs.createEnhancedOrderWithTransport(serialNumber, "inference", map[string]interface{}{
-		"inferenceName": inferenceName,
-	}, transportType)
+	return bs.createEnhancedOrder(serialNumber, "trajectory", map[string]interface{}{
+		"trajectoryName": trajectoryName,
+		"arm":            arm,
+	}, bs.messageService.GetDefaultTransport())
 }
 
 func (bs *BridgeService) CreateTrajectoryOrderWithTransport(serialNumber, trajectoryName, arm string, transportType transport.TransportType) error {
-	return bs.createEnhancedOrderWithTransport(serialNumber, "trajectory", map[string]interface{}{
+	return bs.createEnhancedOrder(serialNumber, "trajectory", map[string]interface{}{
 		"trajectoryName": trajectoryName,
 		"arm":            arm,
 	}, transportType)
 }
 
-func (bs *BridgeService) CreateInferenceOrderWithPositionAndTransport(serialNumber, inferenceName string, position models.NodePosition, transportType transport.TransportType) error {
-	return bs.createEnhancedOrderWithTransport(serialNumber, "inference", map[string]interface{}{
+func (bs *BridgeService) CreateInferenceOrderWithPosition(serialNumber, inferenceName string, position models.NodePosition) error {
+	return bs.createEnhancedOrder(serialNumber, "inference", map[string]interface{}{
 		"inferenceName": inferenceName,
 		"position":      position,
-	}, transportType)
+	}, bs.messageService.GetDefaultTransport())
 }
 
-func (bs *BridgeService) CreateTrajectoryOrderWithPositionAndTransport(serialNumber, trajectoryName, arm string, position models.NodePosition, transportType transport.TransportType) error {
-	return bs.createEnhancedOrderWithTransport(serialNumber, "trajectory", map[string]interface{}{
+func (bs *BridgeService) CreateTrajectoryOrderWithPosition(serialNumber, trajectoryName, arm string, position models.NodePosition) error {
+	return bs.createEnhancedOrder(serialNumber, "trajectory", map[string]interface{}{
 		"trajectoryName": trajectoryName,
 		"arm":            arm,
 		"position":       position,
-	}, transportType)
+	}, bs.messageService.GetDefaultTransport())
 }
 
-func (bs *BridgeService) CreateCustomInferenceOrderWithTransport(req *CustomInferenceOrderRequest, transportType transport.TransportType) error {
-	return bs.createEnhancedOrderWithTransport(req.SerialNumber, "inference", map[string]interface{}{
+func (bs *BridgeService) CreateCustomInferenceOrder(req *CustomInferenceOrderRequest) error {
+	return bs.createEnhancedOrder(req.SerialNumber, "inference", map[string]interface{}{
 		"inferenceName":     req.InferenceName,
 		"position":          req.Position,
 		"customParameters":  req.CustomParameters,
@@ -265,11 +269,11 @@ func (bs *BridgeService) CreateCustomInferenceOrderWithTransport(req *CustomInfe
 		"sequenceId":        req.SequenceID,
 		"released":          req.Released,
 		"edges":             req.Edges,
-	}, transportType)
+	}, bs.messageService.GetDefaultTransport())
 }
 
-func (bs *BridgeService) CreateCustomTrajectoryOrderWithTransport(req *CustomTrajectoryOrderRequest, transportType transport.TransportType) error {
-	return bs.createEnhancedOrderWithTransport(req.SerialNumber, "trajectory", map[string]interface{}{
+func (bs *BridgeService) CreateCustomTrajectoryOrder(req *CustomTrajectoryOrderRequest) error {
+	return bs.createEnhancedOrder(req.SerialNumber, "trajectory", map[string]interface{}{
 		"trajectoryName":    req.TrajectoryName,
 		"arm":               req.Arm,
 		"position":          req.Position,
@@ -281,61 +285,18 @@ func (bs *BridgeService) CreateCustomTrajectoryOrderWithTransport(req *CustomTra
 		"sequenceId":        req.SequenceID,
 		"released":          req.Released,
 		"edges":             req.Edges,
-	}, transportType)
+	}, bs.messageService.GetDefaultTransport())
 }
 
-func (bs *BridgeService) CreateDynamicOrderWithTransport(req *DynamicOrderRequest, transportType transport.TransportType) error {
-	if !bs.redis.IsRobotOnline(req.SerialNumber) {
-		return fmt.Errorf("robot %s is not online", req.SerialNumber)
-	}
-
-	orderID := utils.GenerateOrderID()
-
-	// Create order execution record
-	execution := &models.OrderExecution{
-		OrderID:       orderID,
-		SerialNumber:  req.SerialNumber,
-		OrderUpdateID: req.OrderUpdateID,
-		Status:        "CREATED",
-	}
-
-	if err := bs.db.DB.Create(execution).Error; err != nil {
-		return fmt.Errorf("failed to create order execution record: %w", err)
-	}
-
-	// Process nodes and edges with IDs
-	nodes := utils.ProcessNodesWithIDs(req.Nodes)
-	edges := utils.ProcessEdgesWithIDs(req.Edges)
-
-	msgReq := &message.OrderMessageRequest{
-		SerialNumber:  req.SerialNumber,
-		Manufacturer:  bs.GetRobotManufacturer(req.SerialNumber),
-		OrderID:       orderID,
-		OrderUpdateID: req.OrderUpdateID,
-		Nodes:         nodes,
-		Edges:         edges,
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	if err := bs.messageService.SendOrderMessage(ctx, msgReq, transportType); err != nil {
-		bs.updateOrderStatus(orderID, "FAILED", err.Error())
-		return fmt.Errorf("failed to send dynamic order via %s: %w", transportType, err)
-	}
-
-	bs.updateOrderStatus(orderID, "SENT", "")
-	log.Printf("Dynamic order %s with %d nodes and %d edges sent to robot %s via %s",
-		orderID, len(nodes), len(edges), req.SerialNumber, transportType)
-
-	return nil
+func (bs *BridgeService) CreateDynamicOrder(req *DynamicOrderRequest) error {
+	return bs.createDynamicOrder(req, bs.messageService.GetDefaultTransport())
 }
 
 // ===================================================================
-// PRIVATE HELPER METHODS
+// CORE UNIFIED HELPER METHODS
 // ===================================================================
 
-func (bs *BridgeService) createEnhancedOrderWithTransport(serialNumber, orderType string, params map[string]interface{}, transportType transport.TransportType) error {
+func (bs *BridgeService) createEnhancedOrder(serialNumber, orderType string, params map[string]interface{}, transportType transport.TransportType) error {
 	if !bs.redis.IsRobotOnline(serialNumber) {
 		return fmt.Errorf("robot %s is not online", serialNumber)
 	}
@@ -394,6 +355,90 @@ func (bs *BridgeService) createEnhancedOrderWithTransport(serialNumber, orderTyp
 
 	return bs.messageService.SendOrderMessage(ctx, req, transportType)
 }
+
+func (bs *BridgeService) createDynamicOrder(req *DynamicOrderRequest, transportType transport.TransportType) error {
+	if !bs.redis.IsRobotOnline(req.SerialNumber) {
+		return fmt.Errorf("robot %s is not online", req.SerialNumber)
+	}
+
+	orderID := utils.GenerateOrderID()
+
+	// Create order execution record
+	execution := &models.OrderExecution{
+		OrderID:       orderID,
+		SerialNumber:  req.SerialNumber,
+		OrderUpdateID: req.OrderUpdateID,
+		Status:        "CREATED",
+	}
+
+	if err := bs.db.DB.Create(execution).Error; err != nil {
+		return fmt.Errorf("failed to create order execution record: %w", err)
+	}
+
+	// Process nodes and edges with IDs
+	nodes := utils.ProcessNodesWithIDs(req.Nodes)
+	edges := utils.ProcessEdgesWithIDs(req.Edges)
+
+	msgReq := &message.OrderMessageRequest{
+		SerialNumber:  req.SerialNumber,
+		Manufacturer:  bs.GetRobotManufacturer(req.SerialNumber),
+		OrderID:       orderID,
+		OrderUpdateID: req.OrderUpdateID,
+		Nodes:         nodes,
+		Edges:         edges,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := bs.messageService.SendOrderMessage(ctx, msgReq, transportType); err != nil {
+		bs.updateOrderStatus(orderID, "FAILED", err.Error())
+		return fmt.Errorf("failed to send dynamic order via %s: %w", transportType, err)
+	}
+
+	bs.updateOrderStatus(orderID, "SENT", "")
+	log.Printf("Dynamic order %s with %d nodes and %d edges sent to robot %s via %s",
+		orderID, len(nodes), len(edges), req.SerialNumber, transportType)
+
+	return nil
+}
+
+// ===================================================================
+// TRANSPORT MANAGEMENT METHODS
+// ===================================================================
+
+func (bs *BridgeService) GetAvailableTransports() []transport.TransportType {
+	return bs.messageService.GetAvailableTransports()
+}
+
+func (bs *BridgeService) GetDefaultTransport() transport.TransportType {
+	return bs.messageService.GetDefaultTransport()
+}
+
+func (bs *BridgeService) SetDefaultTransport(transportType transport.TransportType) error {
+	availableTransports := bs.GetAvailableTransports()
+
+	// 사용 가능한 Transport인지 확인
+	found := false
+	for _, t := range availableTransports {
+		if t == transportType {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return fmt.Errorf("transport type %s is not available. Available: %v", transportType, availableTransports)
+	}
+
+	bs.messageService.SetDefaultTransport(transportType)
+	log.Printf("[Bridge Service] Default transport changed to: %s", transportType)
+	return nil
+}
+
+// ===================================================================
+// PRIVATE HELPER METHODS
+// ===================================================================
 
 func (bs *BridgeService) getPositionFromParams(params map[string]interface{}) models.NodePosition {
 	if pos, ok := params["position"].(models.NodePosition); ok {
@@ -516,65 +561,7 @@ func (bs *BridgeService) updateOrderStatus(orderID, status, errorMessage string)
 }
 
 // ===================================================================
-// TRANSPORT MANAGEMENT METHODS ⭐ NEW
-// ===================================================================
-
-func (bs *BridgeService) GetAvailableTransports() []transport.TransportType {
-	return bs.messageService.GetAvailableTransports()
-}
-
-func (bs *BridgeService) GetDefaultTransport() transport.TransportType {
-	return bs.messageService.GetDefaultTransport()
-}
-
-func (bs *BridgeService) SetDefaultTransport(transportType transport.TransportType) error {
-	availableTransports := bs.GetAvailableTransports()
-
-	// 사용 가능한 Transport인지 확인
-	found := false
-	for _, t := range availableTransports {
-		if t == transportType {
-			found = true
-			break
-		}
-	}
-
-	if !found {
-		return fmt.Errorf("transport type %s is not available. Available: %v", transportType, availableTransports)
-	}
-
-	bs.messageService.SetDefaultTransport(transportType)
-	log.Printf("[Bridge Service] Default transport changed to: %s", transportType)
-	return nil
-}
-
-// ===================================================================
-// BACKWARDS COMPATIBILITY METHODS (기존 호환성 유지)
-// ===================================================================
-
-// 기존 Enhanced API 메소드들 (MQTT 전용)
-func (bs *BridgeService) CreateInferenceOrderWithPosition(serialNumber, inferenceName string, position models.NodePosition) error {
-	return bs.CreateInferenceOrderWithPositionAndTransport(serialNumber, inferenceName, position, transport.TransportTypeMQTT)
-}
-
-func (bs *BridgeService) CreateTrajectoryOrderWithPosition(serialNumber, trajectoryName, arm string, position models.NodePosition) error {
-	return bs.CreateTrajectoryOrderWithPositionAndTransport(serialNumber, trajectoryName, arm, position, transport.TransportTypeMQTT)
-}
-
-func (bs *BridgeService) CreateCustomInferenceOrder(req *CustomInferenceOrderRequest) error {
-	return bs.CreateCustomInferenceOrderWithTransport(req, transport.TransportTypeMQTT)
-}
-
-func (bs *BridgeService) CreateCustomTrajectoryOrder(req *CustomTrajectoryOrderRequest) error {
-	return bs.CreateCustomTrajectoryOrderWithTransport(req, transport.TransportTypeMQTT)
-}
-
-func (bs *BridgeService) CreateDynamicOrder(req *DynamicOrderRequest) error {
-	return bs.CreateDynamicOrderWithTransport(req, transport.TransportTypeMQTT)
-}
-
-// ===================================================================
-// TYPE DEFINITIONS (기존 타입들 유지)
+// TYPE DEFINITIONS
 // ===================================================================
 
 type RobotCapabilities struct {
