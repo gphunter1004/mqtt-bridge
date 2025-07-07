@@ -3,30 +3,39 @@ package services
 import (
 	"fmt"
 
-	"mqtt-bridge/database"
 	"mqtt-bridge/models"
-	"mqtt-bridge/utils"
+	"mqtt-bridge/repositories/interfaces"
 )
 
-type NodeService struct {
-	db            *database.Database
-	actionService *ActionService
+// NodeWithActions represents a node template with its associated actions
+type NodeWithActions struct {
+	NodeTemplate models.NodeTemplate     `json:"nodeTemplate"`
+	Actions      []models.ActionTemplate `json:"actions"`
 }
 
-func NewNodeService(db *database.Database) *NodeService {
+type NodeService struct {
+	nodeRepo   interfaces.NodeRepositoryInterface
+	actionRepo interfaces.ActionRepositoryInterface
+}
+
+func NewNodeService(nodeRepo interfaces.NodeRepositoryInterface, actionRepo interfaces.ActionRepositoryInterface) *NodeService {
 	return &NodeService{
-		db:            db,
-		actionService: NewActionService(db),
+		nodeRepo:   nodeRepo,
+		actionRepo: actionRepo,
 	}
 }
 
 func (ns *NodeService) CreateNode(req *models.NodeTemplateRequest) (*models.NodeTemplate, error) {
-	var existingNode models.NodeTemplate
-	err := ns.db.DB.Where("node_id = ?", req.NodeID).First(&existingNode).Error
-	if err == nil {
+	// Check if node with this nodeID already exists
+	exists, err := ns.nodeRepo.CheckNodeExists(req.NodeID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check node existence: %w", err)
+	}
+	if exists {
 		return nil, fmt.Errorf("node with ID '%s' already exists", req.NodeID)
 	}
 
+	// Prepare node template
 	node := &models.NodeTemplate{
 		NodeID:                req.NodeID,
 		Name:                  req.Name,
@@ -41,66 +50,41 @@ func (ns *NodeService) CreateNode(req *models.NodeTemplateRequest) (*models.Node
 		MapID:                 req.Position.MapID,
 	}
 
-	if err := ns.db.DB.Create(node).Error; err != nil {
-		return nil, fmt.Errorf("failed to create node: %w", err)
-	}
-
+	// Create action templates and collect their IDs
 	var actionTemplateIDs []uint
 	for _, actionReq := range req.Actions {
 		actionTemplate, err := ns.createActionTemplate(&actionReq)
 		if err != nil {
+			// Log error but continue with other actions
 			continue
 		}
 		actionTemplateIDs = append(actionTemplateIDs, actionTemplate.ID)
 	}
 
+	// Set action template IDs in node
 	if len(actionTemplateIDs) > 0 {
-		node.SetActionTemplateIDs(actionTemplateIDs)
-		ns.db.DB.Save(node)
+		if err := node.SetActionTemplateIDs(actionTemplateIDs); err != nil {
+			return nil, fmt.Errorf("failed to set action template IDs: %w", err)
+		}
 	}
 
-	return ns.GetNode(node.ID)
+	// Create node using repository
+	return ns.nodeRepo.CreateNode(node)
 }
 
 func (ns *NodeService) GetNode(nodeID uint) (*models.NodeTemplate, error) {
-	var node models.NodeTemplate
-	err := ns.db.DB.Where("id = ?", nodeID).First(&node).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to get node: %w", err)
-	}
-
-	return &node, nil
+	return ns.nodeRepo.GetNode(nodeID)
 }
 
 func (ns *NodeService) GetNodeByNodeID(nodeID string) (*models.NodeTemplate, error) {
-	var node models.NodeTemplate
-	err := ns.db.DB.Where("node_id = ?", nodeID).First(&node).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to get node: %w", err)
-	}
-
-	return &node, nil
+	return ns.nodeRepo.GetNodeByNodeID(nodeID)
 }
 
 func (ns *NodeService) GetNodeWithActions(nodeID uint) (*NodeWithActions, error) {
-	node, err := ns.GetNode(nodeID)
+	// Get node and actions using repository
+	node, actions, err := ns.nodeRepo.GetNodeWithActions(nodeID)
 	if err != nil {
 		return nil, err
-	}
-
-	actionIDs, err := node.GetActionTemplateIDs()
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse action template IDs: %w", err)
-	}
-
-	var actions []models.ActionTemplate
-	if len(actionIDs) > 0 {
-		err = ns.db.DB.Where("id IN ?", actionIDs).
-			Preload("Parameters").
-			Find(&actions).Error
-		if err != nil {
-			return nil, fmt.Errorf("failed to get actions: %w", err)
-		}
 	}
 
 	return &NodeWithActions{
@@ -110,45 +94,37 @@ func (ns *NodeService) GetNodeWithActions(nodeID uint) (*NodeWithActions, error)
 }
 
 func (ns *NodeService) ListNodes(limit, offset int) ([]models.NodeTemplate, error) {
-	var nodes []models.NodeTemplate
-	query := ns.db.DB.Order("created_at DESC")
-
-	if limit > 0 {
-		query = query.Limit(limit)
-	}
-	if offset > 0 {
-		query = query.Offset(offset)
-	}
-
-	err := query.Find(&nodes).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to list nodes: %w", err)
-	}
-
-	return nodes, nil
+	return ns.nodeRepo.ListNodes(limit, offset)
 }
 
 func (ns *NodeService) UpdateNode(nodeID uint, req *models.NodeTemplateRequest) (*models.NodeTemplate, error) {
-	existingNode, err := ns.GetNode(nodeID)
+	// Check if node exists
+	existingNode, err := ns.nodeRepo.GetNode(nodeID)
 	if err != nil {
 		return nil, fmt.Errorf("node not found: %w", err)
 	}
 
+	// Check for nodeID conflicts (if nodeID is changing)
 	if existingNode.NodeID != req.NodeID {
-		var conflictNode models.NodeTemplate
-		err := ns.db.DB.Where("node_id = ? AND id != ?",
-			req.NodeID, nodeID).First(&conflictNode).Error
-		if err == nil {
+		exists, err := ns.nodeRepo.CheckNodeExistsExcluding(req.NodeID, nodeID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check node ID conflict: %w", err)
+		}
+		if exists {
 			return nil, fmt.Errorf("node with ID '%s' already exists", req.NodeID)
 		}
 	}
 
-	oldActionIDs, err := existingNode.GetActionTemplateIDs()
-	if err == nil && len(oldActionIDs) > 0 {
-		ns.deleteActionTemplates(oldActionIDs)
+	// Delete old action templates
+	if existingNode.ActionTemplateIDs != "" {
+		oldActionIDs, err := existingNode.GetActionTemplateIDs()
+		if err == nil && len(oldActionIDs) > 0 {
+			ns.deleteActionTemplates(oldActionIDs)
+		}
 	}
 
-	updateNode := &models.NodeTemplate{
+	// Prepare updated node template
+	node := &models.NodeTemplate{
 		NodeID:                req.NodeID,
 		Name:                  req.Name,
 		Description:           req.Description,
@@ -162,10 +138,7 @@ func (ns *NodeService) UpdateNode(nodeID uint, req *models.NodeTemplateRequest) 
 		MapID:                 req.Position.MapID,
 	}
 
-	if err := ns.db.DB.Model(&models.NodeTemplate{}).Where("id = ?", nodeID).Updates(updateNode).Error; err != nil {
-		return nil, fmt.Errorf("failed to update node: %w", err)
-	}
-
+	// Create new action templates
 	var actionTemplateIDs []uint
 	for _, actionReq := range req.Actions {
 		actionTemplate, err := ns.createActionTemplate(&actionReq)
@@ -175,33 +148,22 @@ func (ns *NodeService) UpdateNode(nodeID uint, req *models.NodeTemplateRequest) 
 		actionTemplateIDs = append(actionTemplateIDs, actionTemplate.ID)
 	}
 
+	// Set new action template IDs
 	if len(actionTemplateIDs) > 0 {
-		updateNode.SetActionTemplateIDs(actionTemplateIDs)
-		ns.db.DB.Model(&models.NodeTemplate{}).Where("id = ?", nodeID).Update("action_template_ids", updateNode.ActionTemplateIDs)
+		if err := node.SetActionTemplateIDs(actionTemplateIDs); err != nil {
+			return nil, fmt.Errorf("failed to set action template IDs: %w", err)
+		}
 	}
 
-	return ns.GetNode(nodeID)
+	// Update node using repository
+	return ns.nodeRepo.UpdateNode(nodeID, node)
 }
 
 func (ns *NodeService) DeleteNode(nodeID uint) error {
-	node, err := ns.GetNode(nodeID)
-	if err != nil {
-		return fmt.Errorf("node not found: %w", err)
-	}
-
-	actionIDs, err := node.GetActionTemplateIDs()
-	if err == nil && len(actionIDs) > 0 {
-		ns.deleteActionTemplates(actionIDs)
-	}
-
-	ns.db.DB.Where("node_template_id = ?", nodeID).Delete(&models.OrderTemplateNode{})
-
-	if err := ns.db.DB.Delete(&models.NodeTemplate{}, nodeID).Error; err != nil {
-		return fmt.Errorf("failed to delete node: %w", err)
-	}
-
-	return nil
+	return ns.nodeRepo.DeleteNode(nodeID)
 }
+
+// Private helper methods
 
 func (ns *NodeService) createActionTemplate(actionReq *models.ActionTemplateRequest) (*models.ActionTemplate, error) {
 	action := &models.ActionTemplate{
@@ -211,30 +173,11 @@ func (ns *NodeService) createActionTemplate(actionReq *models.ActionTemplateRequ
 		ActionDescription: actionReq.ActionDescription,
 	}
 
-	if err := ns.db.DB.Create(action).Error; err != nil {
-		return nil, fmt.Errorf("failed to create action: %w", err)
-	}
-
-	for _, paramReq := range actionReq.Parameters {
-		valueStr, err := utils.ConvertValueToString(paramReq.Value, paramReq.ValueType)
-		if err != nil {
-			continue
-		}
-
-		param := &models.ActionParameterTemplate{
-			ActionTemplateID: action.ID,
-			Key:              paramReq.Key,
-			Value:            valueStr,
-			ValueType:        paramReq.ValueType,
-		}
-
-		ns.db.DB.Create(param)
-	}
-
-	return action, nil
+	return ns.actionRepo.CreateActionTemplate(action, actionReq.Parameters)
 }
 
 func (ns *NodeService) deleteActionTemplates(actionIDs []uint) {
-	ns.db.DB.Where("action_template_id IN ?", actionIDs).Delete(&models.ActionParameterTemplate{})
-	ns.db.DB.Where("id IN ?", actionIDs).Delete(&models.ActionTemplate{})
+	for _, actionID := range actionIDs {
+		ns.actionRepo.DeleteActionTemplate(actionID)
+	}
 }

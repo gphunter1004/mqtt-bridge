@@ -1,12 +1,13 @@
 package database
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 
 	"mqtt-bridge/config"
 	"mqtt-bridge/models"
+	"mqtt-bridge/repositories"
+	"mqtt-bridge/repositories/interfaces"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -15,6 +16,15 @@ import (
 
 type Database struct {
 	DB *gorm.DB
+
+	// Repository interfaces
+	ConnectionRepo     interfaces.ConnectionRepositoryInterface
+	FactsheetRepo      interfaces.FactsheetRepositoryInterface
+	ActionRepo         interfaces.ActionRepositoryInterface
+	NodeRepo           interfaces.NodeRepositoryInterface
+	EdgeRepo           interfaces.EdgeRepositoryInterface
+	OrderTemplateRepo  interfaces.OrderTemplateRepositoryInterface
+	OrderExecutionRepo interfaces.OrderExecutionRepositoryInterface
 }
 
 func NewDatabase(cfg *config.Config) (*Database, error) {
@@ -60,126 +70,44 @@ func NewDatabase(cfg *config.Config) (*Database, error) {
 	db.Raw("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'").Scan(&tableNames)
 	log.Printf("[DB] Created tables: %v", tableNames)
 
-	return &Database{DB: db}, nil
+	// Initialize repositories
+	connectionRepo := repositories.NewConnectionRepository(db)
+	factsheetRepo := repositories.NewFactsheetRepository(db)
+	actionRepo := repositories.NewActionRepository(db)
+	nodeRepo := repositories.NewNodeRepository(db)
+	edgeRepo := repositories.NewEdgeRepository(db)
+	orderTemplateRepo := repositories.NewOrderTemplateRepository(db)
+	orderExecutionRepo := repositories.NewOrderExecutionRepository(db)
+
+	return &Database{
+		DB: db,
+
+		// Assign repository interfaces
+		ConnectionRepo:     connectionRepo,
+		FactsheetRepo:      factsheetRepo,
+		ActionRepo:         actionRepo,
+		NodeRepo:           nodeRepo,
+		EdgeRepo:           edgeRepo,
+		OrderTemplateRepo:  orderTemplateRepo,
+		OrderExecutionRepo: orderExecutionRepo,
+	}, nil
 }
 
+// Legacy methods for backward compatibility (deprecated - use repositories instead)
+// These methods delegate to the appropriate repositories
+
 func (d *Database) SaveConnectionState(connectionMsg *models.ConnectionMessage) error {
-	connectionState := &models.ConnectionState{
-		SerialNumber:    connectionMsg.SerialNumber,
-		ConnectionState: connectionMsg.ConnectionState,
-		HeaderID:        connectionMsg.HeaderID,
-		Timestamp:       connectionMsg.Timestamp,
-		Version:         connectionMsg.Version,
-		Manufacturer:    connectionMsg.Manufacturer,
-	}
-
-	err := d.DB.Where("serial_number = ?", connectionMsg.SerialNumber).
-		Assign(connectionState).
-		FirstOrCreate(connectionState).Error
-
-	if err != nil {
-		return fmt.Errorf("failed to save connection state: %w", err)
-	}
-
-	connectionHistory := &models.ConnectionStateHistory{
-		SerialNumber:    connectionMsg.SerialNumber,
-		ConnectionState: connectionMsg.ConnectionState,
-		HeaderID:        connectionMsg.HeaderID,
-		Timestamp:       connectionMsg.Timestamp,
-		Version:         connectionMsg.Version,
-		Manufacturer:    connectionMsg.Manufacturer,
-	}
-
-	d.DB.Create(connectionHistory)
-	return nil
+	return d.ConnectionRepo.SaveConnectionState(connectionMsg)
 }
 
 func (d *Database) SaveOrUpdateFactsheet(factsheetMsg *models.FactsheetMessage) error {
-	// Delete existing data
-	d.DB.Exec(`DELETE FROM agv_action_parameters 
-		WHERE agv_action_id IN (
-			SELECT id FROM agv_actions WHERE serial_number = ?
-		)`, factsheetMsg.SerialNumber)
-	d.DB.Where("serial_number = ?", factsheetMsg.SerialNumber).Delete(&models.AgvAction{})
-	d.DB.Where("serial_number = ?", factsheetMsg.SerialNumber).Delete(&models.PhysicalParameter{})
-	d.DB.Where("serial_number = ?", factsheetMsg.SerialNumber).Delete(&models.TypeSpecification{})
-
-	// Save new data
-	physicalParam := &models.PhysicalParameter{
-		SerialNumber:    factsheetMsg.SerialNumber,
-		AccelerationMax: factsheetMsg.PhysicalParameters.AccelerationMax,
-		DecelerationMax: factsheetMsg.PhysicalParameters.DecelerationMax,
-		HeightMax:       factsheetMsg.PhysicalParameters.HeightMax,
-		HeightMin:       factsheetMsg.PhysicalParameters.HeightMin,
-		Length:          factsheetMsg.PhysicalParameters.Length,
-		SpeedMax:        factsheetMsg.PhysicalParameters.SpeedMax,
-		SpeedMin:        factsheetMsg.PhysicalParameters.SpeedMin,
-		Width:           factsheetMsg.PhysicalParameters.Width,
-	}
-	d.DB.Create(physicalParam)
-
-	localizationTypesJSON, _ := json.Marshal(factsheetMsg.TypeSpecification.LocalizationTypes)
-	navigationTypesJSON, _ := json.Marshal(factsheetMsg.TypeSpecification.NavigationTypes)
-
-	typeSpec := &models.TypeSpecification{
-		SerialNumber:      factsheetMsg.SerialNumber,
-		AgvClass:          factsheetMsg.TypeSpecification.AgvClass,
-		AgvKinematics:     factsheetMsg.TypeSpecification.AgvKinematics,
-		LocalizationTypes: string(localizationTypesJSON),
-		MaxLoadMass:       factsheetMsg.TypeSpecification.MaxLoadMass,
-		NavigationTypes:   string(navigationTypesJSON),
-		SeriesDescription: factsheetMsg.TypeSpecification.SeriesDescription,
-		SeriesName:        factsheetMsg.TypeSpecification.SeriesName,
-	}
-	d.DB.Create(typeSpec)
-
-	for _, action := range factsheetMsg.ProtocolFeatures.AgvActions {
-		actionScopesJSON, _ := json.Marshal(action.ActionScopes)
-
-		agvAction := &models.AgvAction{
-			SerialNumber:      factsheetMsg.SerialNumber,
-			ActionType:        action.ActionType,
-			ActionDescription: action.ActionDescription,
-			ActionScopes:      string(actionScopesJSON),
-			ResultDescription: action.ResultDescription,
-		}
-
-		if err := d.DB.Create(agvAction).Error; err != nil {
-			continue
-		}
-
-		for _, param := range action.ActionParameters {
-			actionParam := &models.AgvActionParameter{
-				AgvActionID:   agvAction.ID,
-				Key:           param.Key,
-				Description:   param.Description,
-				IsOptional:    param.IsOptional,
-				ValueDataType: param.ValueDataType,
-			}
-			d.DB.Create(actionParam)
-		}
-	}
-
-	return nil
+	return d.FactsheetRepo.SaveOrUpdateFactsheet(factsheetMsg)
 }
 
 func (d *Database) GetLastConnectionState(serialNumber string) (*models.ConnectionState, error) {
-	var connectionState models.ConnectionState
-	err := d.DB.Where("serial_number = ?", serialNumber).
-		Order("created_at desc").
-		First(&connectionState).Error
-
-	if err != nil {
-		return nil, err
-	}
-
-	return &connectionState, nil
+	return d.ConnectionRepo.GetLastConnectionState(serialNumber)
 }
 
 func (d *Database) DebugAgvActions(serialNumber string) {
-	var actions []models.AgvAction
-	d.DB.Where("serial_number = ?", serialNumber).
-		Preload("Parameters").Find(&actions)
-
-	log.Printf("[DB DEBUG] Found %d AGV actions for robot: %s", len(actions), serialNumber)
+	d.FactsheetRepo.DebugAgvActions(serialNumber)
 }

@@ -6,25 +6,38 @@ import (
 	"log"
 	"time"
 
-	"mqtt-bridge/database"
 	"mqtt-bridge/message"
 	"mqtt-bridge/models"
 	"mqtt-bridge/redis"
+	"mqtt-bridge/repositories/interfaces"
 	"mqtt-bridge/transport"
 	"mqtt-bridge/utils"
 )
 
 type BridgeService struct {
-	db             *database.Database
+	// Repository dependencies
+	connectionRepo     interfaces.ConnectionRepositoryInterface
+	factsheetRepo      interfaces.FactsheetRepositoryInterface
+	orderExecutionRepo interfaces.OrderExecutionRepositoryInterface
+
+	// Other dependencies
 	redis          *redis.RedisClient
 	messageService *MessageService
 }
 
-func NewBridgeService(db *database.Database, redisClient *redis.RedisClient, messageService *MessageService) *BridgeService {
+func NewBridgeService(
+	connectionRepo interfaces.ConnectionRepositoryInterface,
+	factsheetRepo interfaces.FactsheetRepositoryInterface,
+	orderExecutionRepo interfaces.OrderExecutionRepositoryInterface,
+	redisClient *redis.RedisClient,
+	messageService *MessageService,
+) *BridgeService {
 	return &BridgeService{
-		db:             db,
-		redis:          redisClient,
-		messageService: messageService,
+		connectionRepo:     connectionRepo,
+		factsheetRepo:      factsheetRepo,
+		orderExecutionRepo: orderExecutionRepo,
+		redis:              redisClient,
+		messageService:     messageService,
 	}
 }
 
@@ -37,72 +50,38 @@ func (bs *BridgeService) GetRobotState(serialNumber string) (*models.StateMessag
 }
 
 func (bs *BridgeService) GetRobotConnectionHistory(serialNumber string, limit int) ([]models.ConnectionState, error) {
-	var connections []models.ConnectionState
-	query := bs.db.DB.Where("serial_number = ?", serialNumber).Order("created_at desc")
-
-	if limit > 0 {
-		query = query.Limit(limit)
-	}
-
-	err := query.Find(&connections).Error
-	return connections, err
+	return bs.connectionRepo.GetConnectionHistory(serialNumber, limit)
 }
 
 func (bs *BridgeService) GetRobotCapabilities(serialNumber string) (*models.RobotCapabilities, error) {
-	var physicalParams models.PhysicalParameter
-	if err := bs.db.DB.Where("serial_number = ?", serialNumber).First(&physicalParams).Error; err != nil {
-		return nil, fmt.Errorf("failed to get physical parameters: %w", err)
-	}
-
-	var typeSpec models.TypeSpecification
-	if err := bs.db.DB.Where("serial_number = ?", serialNumber).First(&typeSpec).Error; err != nil {
-		return nil, fmt.Errorf("failed to get type specification: %w", err)
-	}
-
-	var actions []models.AgvAction
-	if err := bs.db.DB.Where("serial_number = ?", serialNumber).Preload("Parameters").Find(&actions).Error; err != nil {
-		return nil, fmt.Errorf("failed to get AGV actions: %w", err)
-	}
-
-	return &models.RobotCapabilities{
-		SerialNumber:       serialNumber,
-		PhysicalParameters: physicalParams,
-		TypeSpecification:  typeSpec,
-		AvailableActions:   actions,
-	}, nil
+	return bs.factsheetRepo.GetRobotCapabilities(serialNumber)
 }
 
 func (bs *BridgeService) GetRobotManufacturer(serialNumber string) string {
-	var connectionState models.ConnectionState
-	err := bs.db.DB.Where("serial_number = ?", serialNumber).
-		Order("created_at desc").First(&connectionState).Error
-
-	if err == nil && connectionState.Manufacturer != "" {
-		return connectionState.Manufacturer
+	manufacturer, err := bs.connectionRepo.GetRobotManufacturer(serialNumber)
+	if err != nil {
+		log.Printf("[Bridge Service] Failed to get manufacturer for robot %s: %v", serialNumber, err)
+		return "Roboligent" // Default fallback
 	}
-	return "Roboligent" // Default
+	return manufacturer
 }
 
 func (bs *BridgeService) GetConnectedRobots() ([]string, error) {
-	var robots []string
-	var connections []models.ConnectionState
-
-	err := bs.db.DB.Select("DISTINCT ON (serial_number) serial_number").
-		Where("connection_state = ?", "ONLINE").
-		Order("serial_number, created_at DESC").
-		Find(&connections).Error
-
+	// Get robots from database that have ONLINE status
+	robots, err := bs.connectionRepo.GetConnectedRobots()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get connected robots from database: %w", err)
 	}
 
-	for _, conn := range connections {
-		if bs.redis.IsRobotOnline(conn.SerialNumber) {
-			robots = append(robots, conn.SerialNumber)
+	// Filter by Redis online status for double verification
+	var onlineRobots []string
+	for _, robot := range robots {
+		if bs.redis.IsRobotOnline(robot) {
+			onlineRobots = append(onlineRobots, robot)
 		}
 	}
 
-	return robots, nil
+	return onlineRobots, nil
 }
 
 func (bs *BridgeService) MonitorRobotHealth(serialNumber string) (*models.RobotHealthStatus, error) {
@@ -363,7 +342,7 @@ func (bs *BridgeService) createDynamicOrder(req *DynamicOrderRequest, transportT
 
 	orderID := utils.GenerateOrderID()
 
-	// Create order execution record
+	// Create order execution record using repository
 	execution := &models.OrderExecution{
 		OrderID:       orderID,
 		SerialNumber:  req.SerialNumber,
@@ -371,7 +350,8 @@ func (bs *BridgeService) createDynamicOrder(req *DynamicOrderRequest, transportT
 		Status:        "CREATED",
 	}
 
-	if err := bs.db.DB.Create(execution).Error; err != nil {
+	_, err := bs.orderExecutionRepo.CreateOrderExecution(execution)
+	if err != nil {
 		return fmt.Errorf("failed to create order execution record: %w", err)
 	}
 
@@ -538,22 +518,9 @@ func (bs *BridgeService) getEdgesFromParams(params map[string]interface{}) []mod
 }
 
 func (bs *BridgeService) updateOrderStatus(orderID, status, errorMessage string) {
-	updateFields := utils.CreateUpdateFields(map[string]interface{}{
-		"status": status,
-	})
-
-	if errorMessage != "" {
-		updateFields["error_message"] = errorMessage
-	}
-
-	updateFields = updateFields.AddCompletionFields(status)
-
-	result := bs.db.DB.Model(&models.OrderExecution{}).
-		Where("order_id = ?", orderID).
-		Updates(updateFields)
-
-	if result.Error != nil {
-		log.Printf("Failed to update order status: %v", result.Error)
+	err := bs.orderExecutionRepo.UpdateOrderStatus(orderID, status, errorMessage)
+	if err != nil {
+		log.Printf("Failed to update order status: %v", err)
 		return
 	}
 
