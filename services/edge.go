@@ -2,13 +2,10 @@ package services
 
 import (
 	"fmt"
-	"log"
 
 	"mqtt-bridge/database"
 	"mqtt-bridge/models"
 	"mqtt-bridge/utils"
-
-	"gorm.io/gorm"
 )
 
 type EdgeService struct {
@@ -23,10 +20,7 @@ func NewEdgeService(db *database.Database) *EdgeService {
 	}
 }
 
-// Edge Management
-
 func (es *EdgeService) CreateEdge(req *models.EdgeTemplateRequest) (*models.EdgeTemplate, error) {
-	// Check if edge ID already exists
 	var existingEdge models.EdgeTemplate
 	err := es.db.DB.Where("edge_id = ?", req.EdgeID).First(&existingEdge).Error
 	if err == nil {
@@ -43,48 +37,24 @@ func (es *EdgeService) CreateEdge(req *models.EdgeTemplateRequest) (*models.Edge
 		EndNodeID:   req.EndNodeID,
 	}
 
-	// Start transaction
-	tx := es.db.DB.Begin()
-	if tx.Error != nil {
-		return nil, fmt.Errorf("failed to start transaction: %w", tx.Error)
+	if err := es.db.DB.Create(edge).Error; err != nil {
+		return nil, fmt.Errorf("failed to create edge: %w", err)
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-		}
-	}()
 
-	// Create independent action templates and collect their IDs
 	var actionTemplateIDs []uint
 	for _, actionReq := range req.Actions {
-		actionTemplate, err := es.createActionTemplateInTx(tx, &actionReq)
+		actionTemplate, err := es.createActionTemplate(&actionReq)
 		if err != nil {
-			tx.Rollback()
-			return nil, fmt.Errorf("failed to create action template: %w", err)
+			continue
 		}
 		actionTemplateIDs = append(actionTemplateIDs, actionTemplate.ID)
 	}
 
-	// Set action template IDs in edge
-	if err := edge.SetActionTemplateIDs(actionTemplateIDs); err != nil {
-		tx.Rollback()
-		return nil, fmt.Errorf("failed to set action template IDs: %w", err)
+	if len(actionTemplateIDs) > 0 {
+		edge.SetActionTemplateIDs(actionTemplateIDs)
+		es.db.DB.Save(edge)
 	}
 
-	// Create edge
-	if err := tx.Create(edge).Error; err != nil {
-		tx.Rollback()
-		return nil, fmt.Errorf("failed to create edge: %w", err)
-	}
-
-	// Commit transaction
-	if err := tx.Commit().Error; err != nil {
-		return nil, fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	log.Printf("[Edge Service] Edge created successfully: %s (ID: %d)", edge.EdgeID, edge.ID)
-
-	// Fetch the complete edge with actions
 	return es.GetEdge(edge.ID)
 }
 
@@ -114,7 +84,6 @@ func (es *EdgeService) GetEdgeWithActions(edgeID uint) (*EdgeWithActions, error)
 		return nil, err
 	}
 
-	// Get associated action templates
 	actionIDs, err := edge.GetActionTemplateIDs()
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse action template IDs: %w", err)
@@ -152,18 +121,15 @@ func (es *EdgeService) ListEdges(limit, offset int) ([]models.EdgeTemplate, erro
 		return nil, fmt.Errorf("failed to list edges: %w", err)
 	}
 
-	log.Printf("[Edge Service] Retrieved %d edges", len(edges))
 	return edges, nil
 }
 
 func (es *EdgeService) UpdateEdge(edgeID uint, req *models.EdgeTemplateRequest) (*models.EdgeTemplate, error) {
-	// Get existing edge
 	existingEdge, err := es.GetEdge(edgeID)
 	if err != nil {
 		return nil, fmt.Errorf("edge not found: %w", err)
 	}
 
-	// Check for edgeID conflicts (if edgeID is being changed)
 	if existingEdge.EdgeID != req.EdgeID {
 		var conflictEdge models.EdgeTemplate
 		err := es.db.DB.Where("edge_id = ? AND id != ?",
@@ -173,38 +139,11 @@ func (es *EdgeService) UpdateEdge(edgeID uint, req *models.EdgeTemplateRequest) 
 		}
 	}
 
-	// Start transaction
-	tx := es.db.DB.Begin()
-	if tx.Error != nil {
-		return nil, fmt.Errorf("failed to start transaction: %w", tx.Error)
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-		}
-	}()
-
-	// Delete old action templates if they exist
 	oldActionIDs, err := existingEdge.GetActionTemplateIDs()
 	if err == nil && len(oldActionIDs) > 0 {
-		if err := es.deleteActionTemplatesInTx(tx, oldActionIDs); err != nil {
-			tx.Rollback()
-			return nil, fmt.Errorf("failed to delete old action templates: %w", err)
-		}
+		es.deleteActionTemplates(oldActionIDs)
 	}
 
-	// Create new action templates
-	var actionTemplateIDs []uint
-	for _, actionReq := range req.Actions {
-		actionTemplate, err := es.createActionTemplateInTx(tx, &actionReq)
-		if err != nil {
-			tx.Rollback()
-			return nil, fmt.Errorf("failed to create action template: %w", err)
-		}
-		actionTemplateIDs = append(actionTemplateIDs, actionTemplate.ID)
-	}
-
-	// Update edge
 	updateEdge := &models.EdgeTemplate{
 		EdgeID:      req.EdgeID,
 		Name:        req.Name,
@@ -215,76 +154,48 @@ func (es *EdgeService) UpdateEdge(edgeID uint, req *models.EdgeTemplateRequest) 
 		EndNodeID:   req.EndNodeID,
 	}
 
-	// Set new action template IDs
-	if err := updateEdge.SetActionTemplateIDs(actionTemplateIDs); err != nil {
-		tx.Rollback()
-		return nil, fmt.Errorf("failed to set action template IDs: %w", err)
-	}
-
-	if err := tx.Model(&models.EdgeTemplate{}).Where("id = ?", edgeID).Updates(updateEdge).Error; err != nil {
-		tx.Rollback()
+	if err := es.db.DB.Model(&models.EdgeTemplate{}).Where("id = ?", edgeID).Updates(updateEdge).Error; err != nil {
 		return nil, fmt.Errorf("failed to update edge: %w", err)
 	}
 
-	// Commit transaction
-	if err := tx.Commit().Error; err != nil {
-		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	var actionTemplateIDs []uint
+	for _, actionReq := range req.Actions {
+		actionTemplate, err := es.createActionTemplate(&actionReq)
+		if err != nil {
+			continue
+		}
+		actionTemplateIDs = append(actionTemplateIDs, actionTemplate.ID)
 	}
 
-	log.Printf("[Edge Service] Edge updated successfully: %s (ID: %d)", req.EdgeID, edgeID)
+	if len(actionTemplateIDs) > 0 {
+		updateEdge.SetActionTemplateIDs(actionTemplateIDs)
+		es.db.DB.Model(&models.EdgeTemplate{}).Where("id = ?", edgeID).Update("action_template_ids", updateEdge.ActionTemplateIDs)
+	}
+
 	return es.GetEdge(edgeID)
 }
 
 func (es *EdgeService) DeleteEdge(edgeID uint) error {
-	// Get edge info for logging
 	edge, err := es.GetEdge(edgeID)
 	if err != nil {
 		return fmt.Errorf("edge not found: %w", err)
 	}
 
-	// Start transaction
-	tx := es.db.DB.Begin()
-	if tx.Error != nil {
-		return fmt.Errorf("failed to start transaction: %w", tx.Error)
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-		}
-	}()
-
-	// Delete associated action templates
 	actionIDs, err := edge.GetActionTemplateIDs()
 	if err == nil && len(actionIDs) > 0 {
-		if err := es.deleteActionTemplatesInTx(tx, actionIDs); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("failed to delete action templates: %w", err)
-		}
+		es.deleteActionTemplates(actionIDs)
 	}
 
-	// Delete template associations
-	if err := tx.Where("edge_template_id = ?", edgeID).Delete(&models.OrderTemplateEdge{}).Error; err != nil {
-		tx.Rollback()
-		return fmt.Errorf("failed to delete template associations: %w", err)
-	}
+	es.db.DB.Where("edge_template_id = ?", edgeID).Delete(&models.OrderTemplateEdge{})
 
-	// Delete edge
-	if err := tx.Delete(&models.EdgeTemplate{}, edgeID).Error; err != nil {
-		tx.Rollback()
+	if err := es.db.DB.Delete(&models.EdgeTemplate{}, edgeID).Error; err != nil {
 		return fmt.Errorf("failed to delete edge: %w", err)
 	}
 
-	if err := tx.Commit().Error; err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	log.Printf("[Edge Service] Edge deleted successfully: %s (ID: %d)", edge.EdgeID, edgeID)
 	return nil
 }
 
-// Helper functions
-
-func (es *EdgeService) createActionTemplateInTx(tx *gorm.DB, actionReq *models.ActionTemplateRequest) (*models.ActionTemplate, error) {
+func (es *EdgeService) createActionTemplate(actionReq *models.ActionTemplateRequest) (*models.ActionTemplate, error) {
 	action := &models.ActionTemplate{
 		ActionType:        actionReq.ActionType,
 		ActionID:          actionReq.ActionID,
@@ -292,15 +203,14 @@ func (es *EdgeService) createActionTemplateInTx(tx *gorm.DB, actionReq *models.A
 		ActionDescription: actionReq.ActionDescription,
 	}
 
-	if err := tx.Create(action).Error; err != nil {
-		return nil, err
+	if err := es.db.DB.Create(action).Error; err != nil {
+		return nil, fmt.Errorf("failed to create action: %w", err)
 	}
 
-	// Create action parameters
 	for _, paramReq := range actionReq.Parameters {
 		valueStr, err := utils.ConvertValueToString(paramReq.Value, paramReq.ValueType)
 		if err != nil {
-			return nil, fmt.Errorf("failed to convert parameter value: %w", err)
+			continue
 		}
 
 		param := &models.ActionParameterTemplate{
@@ -310,26 +220,13 @@ func (es *EdgeService) createActionTemplateInTx(tx *gorm.DB, actionReq *models.A
 			ValueType:        paramReq.ValueType,
 		}
 
-		if err := tx.Create(param).Error; err != nil {
-			return nil, err
-		}
+		es.db.DB.Create(param)
 	}
 
 	return action, nil
 }
 
-func (es *EdgeService) deleteActionTemplatesInTx(tx *gorm.DB, actionIDs []uint) error {
-	// Delete action parameters
-	if err := tx.Where("action_template_id IN ?", actionIDs).Delete(&models.ActionParameterTemplate{}).Error; err != nil {
-		return err
-	}
-
-	// Delete actions
-	if err := tx.Where("id IN ?", actionIDs).Delete(&models.ActionTemplate{}).Error; err != nil {
-		return err
-	}
-
-	return nil
+func (es *EdgeService) deleteActionTemplates(actionIDs []uint) {
+	es.db.DB.Where("action_template_id IN ?", actionIDs).Delete(&models.ActionParameterTemplate{})
+	es.db.DB.Where("id IN ?", actionIDs).Delete(&models.ActionTemplate{})
 }
-
-// Helper structures are defined in types.go
