@@ -10,50 +10,48 @@ import (
 	"gorm.io/gorm"
 )
 
-// FactsheetRepository implements FactsheetRepositoryInterface
+// FactsheetRepository implements FactsheetRepositoryInterface.
 type FactsheetRepository struct {
 	db *gorm.DB
 }
 
-// NewFactsheetRepository creates a new instance of FactsheetRepository
+// NewFactsheetRepository creates a new instance of FactsheetRepository.
 func NewFactsheetRepository(db *gorm.DB) interfaces.FactsheetRepositoryInterface {
 	return &FactsheetRepository{
 		db: db,
 	}
 }
 
-// SaveOrUpdateFactsheet saves or updates the complete factsheet for a robot
-func (fr *FactsheetRepository) SaveOrUpdateFactsheet(factsheetMsg *models.FactsheetMessage) error {
-	return fr.db.Transaction(func(tx *gorm.DB) error {
-		if err := fr.deleteExistingFactsheetData(tx, factsheetMsg.SerialNumber); err != nil {
-			return fmt.Errorf("failed to delete existing factsheet data: %w", err)
-		}
-		if err := fr.savePhysicalParameters(tx, factsheetMsg); err != nil {
-			return fmt.Errorf("failed to save physical parameters: %w", err)
-		}
-		if err := fr.saveTypeSpecification(tx, factsheetMsg); err != nil {
-			return fmt.Errorf("failed to save type specification: %w", err)
-		}
-		if err := fr.saveAgvActions(tx, factsheetMsg); err != nil {
-			return fmt.Errorf("failed to save AGV actions: %w", err)
-		}
-		return nil
-	})
+// SaveOrUpdateFactsheet saves or updates the complete factsheet for a robot within a transaction.
+func (fr *FactsheetRepository) SaveOrUpdateFactsheet(tx *gorm.DB, factsheetMsg *models.FactsheetMessage) error {
+	// The transaction is now managed by the service layer.
+	// This method will use the provided 'tx' for all its operations.
+	if err := fr.deleteExistingFactsheetData(tx, factsheetMsg.SerialNumber); err != nil {
+		return fmt.Errorf("failed to delete existing factsheet data: %w", err)
+	}
+	if err := fr.savePhysicalParameters(tx, factsheetMsg); err != nil {
+		return fmt.Errorf("failed to save physical parameters: %w", err)
+	}
+	if err := fr.saveTypeSpecification(tx, factsheetMsg); err != nil {
+		return fmt.Errorf("failed to save type specification: %w", err)
+	}
+	if err := fr.saveAgvActions(tx, factsheetMsg); err != nil {
+		return fmt.Errorf("failed to save AGV actions: %w", err)
+	}
+	return nil
 }
 
-// GetPhysicalParameters retrieves physical parameters for a robot
+// GetPhysicalParameters retrieves physical parameters for a robot.
 func (fr *FactsheetRepository) GetPhysicalParameters(serialNumber string) (*models.PhysicalParameter, error) {
-	// Use the generic helper function
 	return FindByField[models.PhysicalParameter](fr.db, "serial_number", serialNumber)
 }
 
-// GetTypeSpecification retrieves type specification for a robot
+// GetTypeSpecification retrieves type specification for a robot.
 func (fr *FactsheetRepository) GetTypeSpecification(serialNumber string) (*models.TypeSpecification, error) {
-	// Use the generic helper function
 	return FindByField[models.TypeSpecification](fr.db, "serial_number", serialNumber)
 }
 
-// GetAgvActions retrieves all AGV actions for a robot with parameters
+// GetAgvActions retrieves all AGV actions for a robot with parameters.
 func (fr *FactsheetRepository) GetAgvActions(serialNumber string) ([]models.AgvAction, error) {
 	var actions []models.AgvAction
 	err := fr.db.Where("serial_number = ?", serialNumber).Preload("Parameters").Find(&actions).Error
@@ -63,7 +61,7 @@ func (fr *FactsheetRepository) GetAgvActions(serialNumber string) ([]models.AgvA
 	return actions, nil
 }
 
-// GetRobotCapabilities retrieves complete robot capabilities (physical params, type spec, actions)
+// GetRobotCapabilities retrieves complete robot capabilities.
 func (fr *FactsheetRepository) GetRobotCapabilities(serialNumber string) (*models.RobotCapabilities, error) {
 	physicalParams, err := fr.GetPhysicalParameters(serialNumber)
 	if err != nil {
@@ -85,22 +83,17 @@ func (fr *FactsheetRepository) GetRobotCapabilities(serialNumber string) (*model
 	}, nil
 }
 
-// DebugAgvActions logs debug information about AGV actions for a robot
+// DebugAgvActions logs debug information about AGV actions for a robot.
 func (fr *FactsheetRepository) DebugAgvActions(serialNumber string) {
 	var actions []models.AgvAction
 	fr.db.Where("serial_number = ?", serialNumber).Preload("Parameters").Find(&actions)
 	log.Printf("[DB DEBUG] Found %d AGV actions for robot: %s", len(actions), serialNumber)
-	for i, action := range actions {
-		log.Printf("[DB DEBUG] Action %d: %s (%d parameters)", i+1, action.ActionType, len(action.Parameters))
-	}
 }
 
 // Private helper methods
 func (fr *FactsheetRepository) deleteExistingFactsheetData(tx *gorm.DB, serialNumber string) error {
-	if err := tx.Exec(`DELETE FROM agv_action_parameters 
-		WHERE agv_action_id IN (
-			SELECT id FROM agv_actions WHERE serial_number = ?
-		)`, serialNumber).Error; err != nil {
+	// Use tx instead of fr.db
+	if err := tx.Exec("DELETE FROM agv_action_parameters WHERE agv_action_id IN (SELECT id FROM agv_actions WHERE serial_number = ?)", serialNumber).Error; err != nil {
 		return err
 	}
 	if err := tx.Where("serial_number = ?", serialNumber).Delete(&models.AgvAction{}).Error; err != nil {

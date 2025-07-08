@@ -7,21 +7,33 @@ import (
 	"mqtt-bridge/redis"
 )
 
-// OrderService is a wrapper that combines template and execution services
+// OrderService is a convenient wrapper that combines template and execution services.
 type OrderService struct {
 	TemplateService  *OrderTemplateService
 	ExecutionService *OrderExecutionService
 }
 
+// NewOrderService creates a new instance of OrderService, initializing all its dependencies.
 func NewOrderService(db *database.Database, redisClient *redis.RedisClient, mqttClient *mqtt.Client) *OrderService {
-	// Create services with proper repository dependencies
-	templateService := NewOrderTemplateService(db.OrderTemplateRepo, db.ActionRepo)
+	// Create the UnitOfWork instance
+	uow := database.NewUnitOfWork(db.DB)
+
+	// Create underlying services with their proper repository dependencies.
+	templateService := NewOrderTemplateService(
+		db.OrderTemplateRepo,
+		db.ActionRepo,
+		uow, // Pass UnitOfWork
+	)
+
+	// Correctly pass all dependencies to the OrderExecutionService constructor.
 	executionService := NewOrderExecutionService(
 		db.OrderExecutionRepo,
 		db.OrderTemplateRepo,
 		db.ConnectionRepo,
+		db.ActionRepo,
 		redisClient,
 		mqttClient,
+		uow, // Pass UnitOfWork
 	)
 
 	return &OrderService{
@@ -30,7 +42,9 @@ func NewOrderService(db *database.Database, redisClient *redis.RedisClient, mqtt
 	}
 }
 
-// Order Template Methods (delegated to TemplateService)
+// ===================================================================
+// Order Template Methods (Delegated to TemplateService)
+// ===================================================================
 
 func (os *OrderService) CreateOrderTemplate(req *models.CreateOrderTemplateRequest) (*models.OrderTemplate, error) {
 	return os.TemplateService.CreateOrderTemplate(req)
@@ -64,7 +78,9 @@ func (os *OrderService) AssociateEdges(templateID uint, req *models.AssociateEdg
 	return os.TemplateService.AssociateEdges(templateID, req)
 }
 
-// Order Execution Methods (delegated to ExecutionService)
+// ===================================================================
+// Order Execution Methods (Delegated to ExecutionService)
+// ===================================================================
 
 func (os *OrderService) ExecuteOrder(req *models.ExecuteOrderRequest) (*models.OrderExecutionResponse, error) {
 	return os.ExecutionService.ExecuteOrder(req)
@@ -80,12 +96,4 @@ func (os *OrderService) ListOrderExecutions(serialNumber string, limit, offset i
 
 func (os *OrderService) CancelOrder(orderID string) error {
 	return os.ExecutionService.CancelOrder(orderID)
-}
-
-func (os *OrderService) UpdateOrderStatus(orderID, status string, errorMessage ...string) error {
-	return os.ExecutionService.UpdateOrderStatus(orderID, status, errorMessage...)
-}
-
-func (os *OrderService) ExecuteDirectOrder(serialNumber string, orderData *models.OrderMessage) (*models.OrderExecutionResponse, error) {
-	return os.ExecutionService.ExecuteDirectOrder(serialNumber, orderData)
 }

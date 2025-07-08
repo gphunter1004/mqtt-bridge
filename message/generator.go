@@ -18,6 +18,11 @@ const (
 	MessageTypeInitPosition  MessageType = "initPosition"
 )
 
+// MessageHeader defines a common interface for all MQTT messages with a header.
+type MessageHeader interface {
+	SetHeader(id int, timestamp, version, manufacturer, serialNumber string)
+}
+
 // MessageGenerator 인터페이스
 type MessageGenerator interface {
 	GenerateOrderMessage(req *OrderMessageRequest) ([]byte, error)
@@ -77,97 +82,76 @@ type InitPositionMessageRequest struct {
 // =======================================================================
 
 func (g *DefaultMessageGenerator) GenerateOrderMessage(req *OrderMessageRequest) ([]byte, error) {
-	headerID := g.getNextHeaderID(req.SerialNumber, req.CustomHeaderID)
-
 	orderMsg := &models.OrderMessage{
-		HeaderID:      headerID,
-		Timestamp:     utils.GetCurrentTimestamp(),
-		Version:       "2.0.0",
-		Manufacturer:  req.Manufacturer,
-		SerialNumber:  req.SerialNumber,
 		OrderID:       req.OrderID,
 		OrderUpdateID: req.OrderUpdateID,
 		Nodes:         req.Nodes,
 		Edges:         req.Edges,
 	}
 
-	return json.Marshal(orderMsg)
+	// Use helper to populate common header and marshal to JSON
+	return g.populateBaseMessage(orderMsg, req.SerialNumber, req.Manufacturer, req.CustomHeaderID)
 }
 
 func (g *DefaultMessageGenerator) GenerateInstantActionMessage(req *InstantActionMessageRequest) ([]byte, error) {
-	headerID := g.getNextHeaderID(req.SerialNumber, req.CustomHeaderID)
-
 	actionMsg := &models.InstantActionMessage{
-		HeaderID:     headerID,
-		Timestamp:    utils.GetCurrentTimestamp(),
-		Version:      "2.0.0",
-		Manufacturer: req.Manufacturer,
-		SerialNumber: req.SerialNumber,
-		Actions:      req.Actions,
+		Actions: req.Actions,
 	}
 
-	return json.Marshal(actionMsg)
+	return g.populateBaseMessage(actionMsg, req.SerialNumber, req.Manufacturer, req.CustomHeaderID)
 }
 
 func (g *DefaultMessageGenerator) GenerateFactsheetRequestMessage(req *FactsheetRequestMessageRequest) ([]byte, error) {
-	headerID := g.getNextHeaderID(req.SerialNumber, req.CustomHeaderID)
-	actionID := utils.GenerateActionID() + "_factsheet"
-
 	actionMsg := &models.InstantActionMessage{
-		HeaderID:     headerID,
-		Timestamp:    utils.GetCurrentTimestamp(),
-		Version:      "2.0.0",
-		Manufacturer: req.Manufacturer,
-		SerialNumber: req.SerialNumber,
 		Actions: []models.Action{
 			{
 				ActionType:       "factsheetRequest",
-				ActionID:         actionID,
+				ActionID:         utils.GenerateActionID(),
 				BlockingType:     "NONE",
 				ActionParameters: []models.ActionParameter{},
 			},
 		},
 	}
 
-	return json.Marshal(actionMsg)
+	return g.populateBaseMessage(actionMsg, req.SerialNumber, req.Manufacturer, req.CustomHeaderID)
 }
 
 func (g *DefaultMessageGenerator) GenerateInitPositionMessage(req *InitPositionMessageRequest) ([]byte, error) {
-	headerID := g.getNextHeaderID(req.SerialNumber, req.CustomHeaderID)
-	actionID := utils.GenerateActionID() + "_initpos"
-
 	actionMsg := &models.InstantActionMessage{
-		HeaderID:     headerID,
-		Timestamp:    utils.GetCurrentTimestamp(),
-		Version:      "2.0.0",
-		Manufacturer: req.Manufacturer,
-		SerialNumber: req.SerialNumber,
 		Actions: []models.Action{
 			{
 				ActionType:   "initPosition",
-				ActionID:     actionID,
+				ActionID:     utils.GenerateActionID(),
 				BlockingType: "NONE",
 				ActionParameters: []models.ActionParameter{
-					{
-						Key:   "pose",
-						Value: req.Pose,
-					},
+					{Key: "pose", Value: req.Pose},
 				},
 			},
 		},
 	}
 
-	return json.Marshal(actionMsg)
+	return g.populateBaseMessage(actionMsg, req.SerialNumber, req.Manufacturer, req.CustomHeaderID)
+}
+
+// =======================================================================
+// HELPER METHODS
+// =======================================================================
+
+// populateBaseMessage is a private helper to fill common header fields and marshal the message.
+func (g *DefaultMessageGenerator) populateBaseMessage(msg MessageHeader, serial, manufacturer string, customID *int) ([]byte, error) {
+	headerID := g.getNextHeaderID(serial, customID)
+	// Populate common header fields using the interface method
+	msg.SetHeader(headerID, utils.GetCurrentTimestamp(), "2.0.0", manufacturer, serial)
+	// Marshal the final message to JSON
+	return json.Marshal(msg)
 }
 
 func (g *DefaultMessageGenerator) getNextHeaderID(serialNumber string, customID *int) int {
 	if customID != nil {
 		return *customID
 	}
-
 	g.mutex.Lock()
 	defer g.mutex.Unlock()
-
 	g.headerIDTracker[serialNumber]++
 	return g.headerIDTracker[serialNumber]
 }

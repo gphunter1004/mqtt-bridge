@@ -2,6 +2,12 @@ package models
 
 import "time"
 
+// MessageHeader defines a common interface for all MQTT messages that include a standard header.
+// This allows for generic functions to populate common header fields.
+type MessageHeader interface {
+	SetHeader(id int, timestamp, version, manufacturer, serialNumber string)
+}
+
 // --- MQTT General Purpose Models ---
 
 // ActionParameter is the structure for action parameters within an MQTT message.
@@ -19,7 +25,7 @@ type Action struct {
 	ActionDescription string            `json:"actionDescription,omitempty"`
 }
 
-// InstantActionMessage is the MQTT message for sending immediate actions.
+// InstantActionMessage is the MQTT message for sending immediate, ad-hoc actions.
 type InstantActionMessage struct {
 	HeaderID     int      `json:"headerId"`
 	Timestamp    string   `json:"timestamp"`
@@ -27,6 +33,15 @@ type InstantActionMessage struct {
 	Manufacturer string   `json:"manufacturer"`
 	SerialNumber string   `json:"serialNumber"`
 	Actions      []Action `json:"actions"`
+}
+
+// SetHeader implements the MessageHeader interface for InstantActionMessage.
+func (m *InstantActionMessage) SetHeader(id int, timestamp, version, manufacturer, serialNumber string) {
+	m.HeaderID = id
+	m.Timestamp = timestamp
+	m.Version = version
+	m.Manufacturer = manufacturer
+	m.SerialNumber = serialNumber
 }
 
 // --- MQTT Order Message Models ---
@@ -41,7 +56,7 @@ type NodePosition struct {
 	MapID                 string  `json:"mapId"`
 }
 
-// Node represents a node within an OrderMessage.
+// Node represents a single waypoint or task location within an OrderMessage.
 type Node struct {
 	NodeID       string       `json:"nodeId"`
 	Description  string       `json:"description"`
@@ -51,7 +66,7 @@ type Node struct {
 	Actions      []Action     `json:"actions"`
 }
 
-// Edge represents an edge within an OrderMessage.
+// Edge represents a path or trajectory between two nodes in an OrderMessage.
 type Edge struct {
 	EdgeID      string   `json:"edgeId"`
 	SequenceID  int      `json:"sequenceId"`
@@ -61,7 +76,7 @@ type Edge struct {
 	Actions     []Action `json:"actions"`
 }
 
-// OrderMessage is the main structure for sending an order via MQTT.
+// OrderMessage is the main structure for sending a complex, multi-step order via MQTT.
 type OrderMessage struct {
 	HeaderID      int    `json:"headerId"`
 	Timestamp     string `json:"timestamp"`
@@ -72,6 +87,15 @@ type OrderMessage struct {
 	OrderUpdateID int    `json:"orderUpdateId"`
 	Nodes         []Node `json:"nodes"`
 	Edges         []Edge `json:"edges"`
+}
+
+// SetHeader implements the MessageHeader interface for OrderMessage.
+func (m *OrderMessage) SetHeader(id int, timestamp, version, manufacturer, serialNumber string) {
+	m.HeaderID = id
+	m.Timestamp = timestamp
+	m.Version = version
+	m.Manufacturer = manufacturer
+	m.SerialNumber = serialNumber
 }
 
 // --- MQTT Robot-to-Bridge Message Models ---
@@ -101,7 +125,7 @@ type FactsheetMessage struct {
 // Factsheet-related sub-structures.
 type ProtocolFeatures struct {
 	AgvActions         []FactsheetAction `json:"AgvActions"`
-	OptionalParameters []interface{}     `json:"OptionalParameters"`
+	OptionalParameters []interface{}     `json:"OptionalParameters,omitempty"`
 }
 type PhysicalParams struct {
 	AccelerationMax float64 `json:"AccelerationMax"`
@@ -143,10 +167,10 @@ type StateMessage struct {
 	BatteryState          BatteryState  `json:"batteryState"`
 	DistanceSinceLastNode int           `json:"distanceSinceLastNode"`
 	Driving               bool          `json:"driving"`
-	EdgeStates            []interface{} `json:"edgeStates"`
-	Errors                []interface{} `json:"errors"`
+	EdgeStates            []interface{} `json:"edgeStates,omitempty"`
+	Errors                []interface{} `json:"errors,omitempty"`
 	HeaderID              int           `json:"headerId"`
-	Information           []interface{} `json:"information"`
+	Information           []interface{} `json:"information,omitempty"`
 	LastNodeID            string        `json:"lastNodeId"`
 	LastNodeSequenceID    int           `json:"lastNodeSequenceId"`
 	Manufacturer          string        `json:"manufacturer"`

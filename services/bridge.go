@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"mqtt-bridge/database"
 	"mqtt-bridge/message"
 	"mqtt-bridge/models"
 	"mqtt-bridge/redis"
@@ -14,23 +15,63 @@ import (
 	"mqtt-bridge/utils"
 )
 
+// BridgeService acts as a facade, coordinating high-level operations.
 type BridgeService struct {
-	// Repository dependencies
 	connectionRepo     interfaces.ConnectionRepositoryInterface
 	factsheetRepo      interfaces.FactsheetRepositoryInterface
 	orderExecutionRepo interfaces.OrderExecutionRepositoryInterface
-
-	// Other dependencies
-	redis          *redis.RedisClient
-	messageService *MessageService
+	redis              *redis.RedisClient
+	messageService     *MessageService
+	uow                database.UnitOfWorkInterface
 }
 
+// Custom request types for enhanced order creation.
+type (
+	CustomInferenceOrderRequest struct {
+		SerialNumber      string                 `json:"serialNumber"`
+		InferenceName     string                 `json:"inferenceName"`
+		Description       string                 `json:"description"`
+		SequenceID        int                    `json:"sequenceId"`
+		Released          bool                   `json:"released"`
+		Position          models.NodePosition    `json:"position"`
+		ActionType        string                 `json:"actionType"`
+		ActionDescription string                 `json:"actionDescription"`
+		BlockingType      string                 `json:"blockingType"`
+		CustomParameters  map[string]interface{} `json:"customParameters"`
+		Edges             []models.Edge          `json:"edges"`
+	}
+
+	CustomTrajectoryOrderRequest struct {
+		SerialNumber      string                 `json:"serialNumber"`
+		TrajectoryName    string                 `json:"trajectoryName"`
+		Arm               string                 `json:"arm"`
+		Description       string                 `json:"description"`
+		SequenceID        int                    `json:"sequenceId"`
+		Released          bool                   `json:"released"`
+		Position          models.NodePosition    `json:"position"`
+		ActionType        string                 `json:"actionType"`
+		ActionDescription string                 `json:"actionDescription"`
+		BlockingType      string                 `json:"blockingType"`
+		CustomParameters  map[string]interface{} `json:"customParameters"`
+		Edges             []models.Edge          `json:"edges"`
+	}
+
+	DynamicOrderRequest struct {
+		SerialNumber  string        `json:"serialNumber"`
+		OrderUpdateID int           `json:"orderUpdateId"`
+		Nodes         []models.Node `json:"nodes"`
+		Edges         []models.Edge `json:"edges"`
+	}
+)
+
+// NewBridgeService creates a new instance of BridgeService.
 func NewBridgeService(
 	connectionRepo interfaces.ConnectionRepositoryInterface,
 	factsheetRepo interfaces.FactsheetRepositoryInterface,
 	orderExecutionRepo interfaces.OrderExecutionRepositoryInterface,
 	redisClient *redis.RedisClient,
 	messageService *MessageService,
+	uow database.UnitOfWorkInterface,
 ) *BridgeService {
 	return &BridgeService{
 		connectionRepo:     connectionRepo,
@@ -38,6 +79,7 @@ func NewBridgeService(
 		orderExecutionRepo: orderExecutionRepo,
 		redis:              redisClient,
 		messageService:     messageService,
+		uow:                uow,
 	}
 }
 
@@ -46,50 +88,57 @@ func NewBridgeService(
 // ===================================================================
 
 func (bs *BridgeService) GetRobotState(serialNumber string) (*models.StateMessage, error) {
-	return bs.redis.GetState(serialNumber)
+	state, err := bs.redis.GetState(serialNumber)
+	if err != nil {
+		return nil, utils.NewNotFoundError(fmt.Sprintf("State not found for robot %s.", serialNumber))
+	}
+	return state, nil
 }
 
 func (bs *BridgeService) GetRobotConnectionHistory(serialNumber string, limit int) ([]models.ConnectionState, error) {
-	return bs.connectionRepo.GetConnectionHistory(serialNumber, limit)
+	history, err := bs.connectionRepo.GetConnectionHistory(serialNumber, limit)
+	if err != nil {
+		return nil, utils.NewInternalServerError("Failed to retrieve connection history.", err)
+	}
+	return history, nil
 }
 
 func (bs *BridgeService) GetRobotCapabilities(serialNumber string) (*models.RobotCapabilities, error) {
-	return bs.factsheetRepo.GetRobotCapabilities(serialNumber)
+	capabilities, err := bs.factsheetRepo.GetRobotCapabilities(serialNumber)
+	if err != nil {
+		return nil, utils.NewNotFoundError(fmt.Sprintf("Capabilities not found for robot %s.", serialNumber))
+	}
+	return capabilities, nil
 }
 
 func (bs *BridgeService) GetRobotManufacturer(serialNumber string) string {
 	manufacturer, err := bs.connectionRepo.GetRobotManufacturer(serialNumber)
 	if err != nil {
-		log.Printf("[Bridge Service] Failed to get manufacturer for robot %s: %v", serialNumber, err)
+		log.Printf("[Bridge Service] Could not get manufacturer for robot %s: %v", serialNumber, err)
 		return "Roboligent" // Default fallback
 	}
 	return manufacturer
 }
 
 func (bs *BridgeService) GetConnectedRobots() ([]string, error) {
-	// Get robots from database that have ONLINE status
 	robots, err := bs.connectionRepo.GetConnectedRobots()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get connected robots from database: %w", err)
+		return nil, utils.NewInternalServerError("Failed to get connected robots from database.", err)
 	}
-
-	// Filter by Redis online status for double verification
 	var onlineRobots []string
 	for _, robot := range robots {
 		if bs.redis.IsRobotOnline(robot) {
 			onlineRobots = append(onlineRobots, robot)
 		}
 	}
-
 	return onlineRobots, nil
 }
 
 func (bs *BridgeService) MonitorRobotHealth(serialNumber string) (*models.RobotHealthStatus, error) {
 	state, err := bs.GetRobotState(serialNumber)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get robot state for health check: %w", err)
+		return nil, err
 	}
-
 	return &models.RobotHealthStatus{
 		SerialNumber:        serialNumber,
 		IsOnline:            bs.redis.IsRobotOnline(serialNumber),
@@ -107,28 +156,16 @@ func (bs *BridgeService) MonitorRobotHealth(serialNumber string) (*models.RobotH
 }
 
 // ===================================================================
-// UNIFIED ORDER SENDING METHODS
+// UNIFIED ORDER & ACTION SENDING METHODS
 // ===================================================================
 
 func (bs *BridgeService) SendOrderToRobot(serialNumber string, orderData models.OrderRequest) error {
-	return bs.sendOrderWithTransport(serialNumber, orderData, bs.messageService.GetDefaultTransport())
+	return bs.SendOrderToRobotWithTransport(serialNumber, orderData, bs.messageService.GetDefaultTransport())
 }
 
 func (bs *BridgeService) SendOrderToRobotWithTransport(serialNumber string, orderData models.OrderRequest, transportType transport.TransportType) error {
-	return bs.sendOrderWithTransport(serialNumber, orderData, transportType)
-}
-
-func (bs *BridgeService) SendOrderToRobotViaHTTP(serialNumber string, orderData models.OrderRequest) error {
-	return bs.sendOrderWithTransport(serialNumber, orderData, transport.TransportTypeHTTP)
-}
-
-func (bs *BridgeService) SendOrderToRobotViaWebSocket(serialNumber string, orderData models.OrderRequest) error {
-	return bs.sendOrderWithTransport(serialNumber, orderData, transport.TransportTypeWebSocket)
-}
-
-func (bs *BridgeService) sendOrderWithTransport(serialNumber string, orderData models.OrderRequest, transportType transport.TransportType) error {
 	if !bs.redis.IsRobotOnline(serialNumber) {
-		return fmt.Errorf("robot %s is not online", serialNumber)
+		return utils.NewBadRequestError(fmt.Sprintf("Cannot send order: Robot %s is not online.", serialNumber))
 	}
 
 	req := &message.OrderMessageRequest{
@@ -143,34 +180,20 @@ func (bs *BridgeService) sendOrderWithTransport(serialNumber string, orderData m
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	err := bs.messageService.SendOrderMessage(ctx, req, transportType)
-	if err != nil {
-		return fmt.Errorf("failed to send order via %s: %w", transportType, err)
+	if err := bs.messageService.SendOrderMessage(ctx, req, transportType); err != nil {
+		return utils.NewInternalServerError(fmt.Sprintf("Failed to send order via %s.", transportType), err)
 	}
-
 	log.Printf("Order %s sent successfully to robot %s via %s", orderData.OrderID, serialNumber, transportType)
 	return nil
 }
 
-// ===================================================================
-// UNIFIED CUSTOM ACTION METHODS
-// ===================================================================
-
 func (bs *BridgeService) SendCustomAction(serialNumber string, actionRequest models.CustomActionRequest) error {
-	return bs.sendCustomActionWithTransport(serialNumber, actionRequest, bs.messageService.GetDefaultTransport())
+	return bs.SendCustomActionWithTransport(serialNumber, actionRequest, bs.messageService.GetDefaultTransport())
 }
 
 func (bs *BridgeService) SendCustomActionWithTransport(serialNumber string, actionRequest models.CustomActionRequest, transportType transport.TransportType) error {
-	return bs.sendCustomActionWithTransport(serialNumber, actionRequest, transportType)
-}
-
-func (bs *BridgeService) SendCustomActionViaHTTP(serialNumber string, actionRequest models.CustomActionRequest) error {
-	return bs.sendCustomActionWithTransport(serialNumber, actionRequest, transport.TransportTypeHTTP)
-}
-
-func (bs *BridgeService) sendCustomActionWithTransport(serialNumber string, actionRequest models.CustomActionRequest, transportType transport.TransportType) error {
 	if !bs.redis.IsRobotOnline(serialNumber) {
-		return fmt.Errorf("robot %s is not online", serialNumber)
+		return utils.NewBadRequestError(fmt.Sprintf("Cannot send action: Robot %s is not online.", serialNumber))
 	}
 
 	req := &message.InstantActionMessageRequest{
@@ -182,89 +205,61 @@ func (bs *BridgeService) sendCustomActionWithTransport(serialNumber string, acti
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	err := bs.messageService.SendInstantActionMessage(ctx, req, transportType)
-	if err != nil {
-		return fmt.Errorf("failed to send custom action via %s: %w", transportType, err)
+	if err := bs.messageService.SendInstantActionMessage(ctx, req, transportType); err != nil {
+		return utils.NewInternalServerError(fmt.Sprintf("Failed to send custom action via %s.", transportType), err)
 	}
-
 	log.Printf("Custom action sent successfully to robot %s via %s", serialNumber, transportType)
 	return nil
 }
 
 // ===================================================================
-// ENHANCED ORDER CREATION WITH UNIFIED TRANSPORT
+// ENHANCED ORDER CREATION METHODS
 // ===================================================================
 
 func (bs *BridgeService) CreateInferenceOrder(serialNumber, inferenceName string) error {
-	return bs.createEnhancedOrder(serialNumber, "inference", map[string]interface{}{
-		"inferenceName": inferenceName,
-	}, bs.messageService.GetDefaultTransport())
+	return bs.createEnhancedOrder(serialNumber, "inference", map[string]interface{}{"inferenceName": inferenceName}, bs.messageService.GetDefaultTransport())
 }
 
 func (bs *BridgeService) CreateInferenceOrderWithTransport(serialNumber, inferenceName string, transportType transport.TransportType) error {
-	return bs.createEnhancedOrder(serialNumber, "inference", map[string]interface{}{
-		"inferenceName": inferenceName,
-	}, transportType)
+	return bs.createEnhancedOrder(serialNumber, "inference", map[string]interface{}{"inferenceName": inferenceName}, transportType)
 }
 
 func (bs *BridgeService) CreateTrajectoryOrder(serialNumber, trajectoryName, arm string) error {
-	return bs.createEnhancedOrder(serialNumber, "trajectory", map[string]interface{}{
-		"trajectoryName": trajectoryName,
-		"arm":            arm,
-	}, bs.messageService.GetDefaultTransport())
+	params := map[string]interface{}{"trajectoryName": trajectoryName, "arm": arm}
+	return bs.createEnhancedOrder(serialNumber, "trajectory", params, bs.messageService.GetDefaultTransport())
 }
 
 func (bs *BridgeService) CreateTrajectoryOrderWithTransport(serialNumber, trajectoryName, arm string, transportType transport.TransportType) error {
-	return bs.createEnhancedOrder(serialNumber, "trajectory", map[string]interface{}{
-		"trajectoryName": trajectoryName,
-		"arm":            arm,
-	}, transportType)
+	params := map[string]interface{}{"trajectoryName": trajectoryName, "arm": arm}
+	return bs.createEnhancedOrder(serialNumber, "trajectory", params, transportType)
 }
 
 func (bs *BridgeService) CreateInferenceOrderWithPosition(serialNumber, inferenceName string, position models.NodePosition) error {
-	return bs.createEnhancedOrder(serialNumber, "inference", map[string]interface{}{
-		"inferenceName": inferenceName,
-		"position":      position,
-	}, bs.messageService.GetDefaultTransport())
+	params := map[string]interface{}{"inferenceName": inferenceName, "position": position}
+	return bs.createEnhancedOrder(serialNumber, "inference", params, bs.messageService.GetDefaultTransport())
 }
 
 func (bs *BridgeService) CreateTrajectoryOrderWithPosition(serialNumber, trajectoryName, arm string, position models.NodePosition) error {
-	return bs.createEnhancedOrder(serialNumber, "trajectory", map[string]interface{}{
-		"trajectoryName": trajectoryName,
-		"arm":            arm,
-		"position":       position,
-	}, bs.messageService.GetDefaultTransport())
+	params := map[string]interface{}{"trajectoryName": trajectoryName, "arm": arm, "position": position}
+	return bs.createEnhancedOrder(serialNumber, "trajectory", params, bs.messageService.GetDefaultTransport())
 }
 
 func (bs *BridgeService) CreateCustomInferenceOrder(req *CustomInferenceOrderRequest) error {
-	return bs.createEnhancedOrder(req.SerialNumber, "inference", map[string]interface{}{
-		"inferenceName":     req.InferenceName,
-		"position":          req.Position,
-		"customParameters":  req.CustomParameters,
-		"actionType":        req.ActionType,
-		"actionDescription": req.ActionDescription,
-		"blockingType":      req.BlockingType,
-		"description":       req.Description,
-		"sequenceId":        req.SequenceID,
-		"released":          req.Released,
-		"edges":             req.Edges,
-	}, bs.messageService.GetDefaultTransport())
+	params := map[string]interface{}{
+		"inferenceName": req.InferenceName, "position": req.Position, "customParameters": req.CustomParameters,
+		"actionType": req.ActionType, "actionDescription": req.ActionDescription, "blockingType": req.BlockingType,
+		"description": req.Description, "sequenceId": req.SequenceID, "released": req.Released, "edges": req.Edges,
+	}
+	return bs.createEnhancedOrder(req.SerialNumber, "inference", params, bs.messageService.GetDefaultTransport())
 }
 
 func (bs *BridgeService) CreateCustomTrajectoryOrder(req *CustomTrajectoryOrderRequest) error {
-	return bs.createEnhancedOrder(req.SerialNumber, "trajectory", map[string]interface{}{
-		"trajectoryName":    req.TrajectoryName,
-		"arm":               req.Arm,
-		"position":          req.Position,
-		"customParameters":  req.CustomParameters,
-		"actionType":        req.ActionType,
-		"actionDescription": req.ActionDescription,
-		"blockingType":      req.BlockingType,
-		"description":       req.Description,
-		"sequenceId":        req.SequenceID,
-		"released":          req.Released,
-		"edges":             req.Edges,
-	}, bs.messageService.GetDefaultTransport())
+	params := map[string]interface{}{
+		"trajectoryName": req.TrajectoryName, "arm": req.Arm, "position": req.Position, "customParameters": req.CustomParameters,
+		"actionType": req.ActionType, "actionDescription": req.ActionDescription, "blockingType": req.BlockingType,
+		"description": req.Description, "sequenceId": req.SequenceID, "released": req.Released, "edges": req.Edges,
+	}
+	return bs.createEnhancedOrder(req.SerialNumber, "trajectory", params, bs.messageService.GetDefaultTransport())
 }
 
 func (bs *BridgeService) CreateDynamicOrder(req *DynamicOrderRequest) error {
@@ -272,35 +267,28 @@ func (bs *BridgeService) CreateDynamicOrder(req *DynamicOrderRequest) error {
 }
 
 // ===================================================================
-// CORE UNIFIED HELPER METHODS
+// CORE HELPER METHODS
 // ===================================================================
 
 func (bs *BridgeService) createEnhancedOrder(serialNumber, orderType string, params map[string]interface{}, transportType transport.TransportType) error {
 	if !bs.redis.IsRobotOnline(serialNumber) {
-		return fmt.Errorf("robot %s is not online", serialNumber)
+		return utils.NewBadRequestError(fmt.Sprintf("Cannot create order: Robot %s is not online.", serialNumber))
 	}
 
 	orderID := utils.GenerateOrderID()
 	nodeID := utils.GenerateNodeID()
 	actionID := utils.GenerateActionID()
 
-	// Get or create default values
 	position := bs.getPositionFromParams(params)
 	actionType := bs.getActionTypeFromParams(orderType, params)
 	actionDescription := bs.getActionDescriptionFromParams(orderType, params)
 	blockingType := utils.GetValueOrDefault(bs.getStringFromParams(params, "blockingType"), "NONE")
-	description := utils.GetValueOrDefault(bs.getStringFromParams(params, "description"),
-		fmt.Sprintf("%s Task", utils.GetValueOrDefault(orderType, "Unknown")))
-
-	// Build action parameters
+	description := utils.GetValueOrDefault(bs.getStringFromParams(params, "description"), fmt.Sprintf("%s Task", orderType))
 	actionParams := bs.buildActionParameters(orderType, params)
-
-	// Get additional parameters
 	sequenceID := bs.getIntFromParams(params, "sequenceId")
 	released := bs.getBoolFromParams(params, "released", true)
 	edges := bs.getEdgesFromParams(params)
 
-	// Create order data
 	nodes := []models.Node{
 		{
 			NodeID:       nodeID,
@@ -337,12 +325,18 @@ func (bs *BridgeService) createEnhancedOrder(serialNumber, orderType string, par
 
 func (bs *BridgeService) createDynamicOrder(req *DynamicOrderRequest, transportType transport.TransportType) error {
 	if !bs.redis.IsRobotOnline(req.SerialNumber) {
-		return fmt.Errorf("robot %s is not online", req.SerialNumber)
+		return utils.NewBadRequestError(fmt.Sprintf("Cannot create dynamic order: Robot %s is not online.", req.SerialNumber))
 	}
 
-	orderID := utils.GenerateOrderID()
+	tx := bs.uow.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			bs.uow.Rollback(tx)
+			panic(r)
+		}
+	}()
 
-	// Create order execution record using repository
+	orderID := utils.GenerateOrderID()
 	execution := &models.OrderExecution{
 		OrderID:       orderID,
 		SerialNumber:  req.SerialNumber,
@@ -350,15 +344,13 @@ func (bs *BridgeService) createDynamicOrder(req *DynamicOrderRequest, transportT
 		Status:        "CREATED",
 	}
 
-	_, err := bs.orderExecutionRepo.CreateOrderExecution(execution)
-	if err != nil {
-		return fmt.Errorf("failed to create order execution record: %w", err)
+	if _, err := bs.orderExecutionRepo.CreateOrderExecution(tx, execution); err != nil {
+		bs.uow.Rollback(tx)
+		return utils.NewInternalServerError("Failed to create order execution record.", err)
 	}
 
-	// Process nodes and edges with IDs
 	nodes := utils.ProcessNodesWithIDs(req.Nodes)
 	edges := utils.ProcessEdgesWithIDs(req.Edges)
-
 	msgReq := &message.OrderMessageRequest{
 		SerialNumber:  req.SerialNumber,
 		Manufacturer:  bs.GetRobotManufacturer(req.SerialNumber),
@@ -373,14 +365,35 @@ func (bs *BridgeService) createDynamicOrder(req *DynamicOrderRequest, transportT
 
 	if err := bs.messageService.SendOrderMessage(ctx, msgReq, transportType); err != nil {
 		bs.updateOrderStatus(orderID, "FAILED", err.Error())
-		return fmt.Errorf("failed to send dynamic order via %s: %w", transportType, err)
+		bs.uow.Rollback(tx)
+		return utils.NewInternalServerError(fmt.Sprintf("Failed to send dynamic order via %s.", transportType), err)
 	}
 
-	bs.updateOrderStatus(orderID, "SENT", "")
-	log.Printf("Dynamic order %s with %d nodes and %d edges sent to robot %s via %s",
-		orderID, len(nodes), len(edges), req.SerialNumber, transportType)
+	if err := bs.orderExecutionRepo.UpdateOrderStatus(tx, orderID, "SENT"); err != nil {
+		bs.uow.Rollback(tx)
+		return utils.NewInternalServerError("Failed to update dynamic order status to SENT.", err)
+	}
 
+	if err := bs.uow.Commit(tx); err != nil {
+		return utils.NewInternalServerError("Failed to commit dynamic order transaction.", err)
+	}
+	log.Printf("Dynamic order %s sent to robot %s", orderID, req.SerialNumber)
 	return nil
+}
+
+// updateOrderStatus now manages its own transaction for atomicity.
+func (bs *BridgeService) updateOrderStatus(orderID, status, errorMessage string) {
+	tx := bs.uow.Begin()
+	if err := bs.orderExecutionRepo.UpdateOrderStatus(tx, orderID, status, errorMessage); err != nil {
+		bs.uow.Rollback(tx)
+		log.Printf("[ERROR] Failed to update order status for order %s: %v", orderID, err)
+	} else {
+		if err := tx.Commit().Error; err != nil {
+			log.Printf("[ERROR] Failed to commit order status update for order %s: %v", orderID, err)
+		} else {
+			log.Printf("Order %s status updated to %s", orderID, status)
+		}
+	}
 }
 
 // ===================================================================
@@ -397,23 +410,14 @@ func (bs *BridgeService) GetDefaultTransport() transport.TransportType {
 
 func (bs *BridgeService) SetDefaultTransport(transportType transport.TransportType) error {
 	availableTransports := bs.GetAvailableTransports()
-
-	// 사용 가능한 Transport인지 확인
-	found := false
 	for _, t := range availableTransports {
 		if t == transportType {
-			found = true
-			break
+			bs.messageService.SetDefaultTransport(transportType)
+			log.Printf("[Bridge Service] Default transport changed to: %s", transportType)
+			return nil
 		}
 	}
-
-	if !found {
-		return fmt.Errorf("transport type %s is not available. Available: %v", transportType, availableTransports)
-	}
-
-	bs.messageService.SetDefaultTransport(transportType)
-	log.Printf("[Bridge Service] Default transport changed to: %s", transportType)
-	return nil
+	return utils.NewBadRequestError(fmt.Sprintf("Transport type '%s' is not available. Available: %v", transportType, availableTransports))
 }
 
 // ===================================================================
@@ -431,7 +435,6 @@ func (bs *BridgeService) getActionTypeFromParams(orderType string, params map[st
 	if actionType := bs.getStringFromParams(params, "actionType"); actionType != "" {
 		return actionType
 	}
-
 	switch orderType {
 	case "inference":
 		return "Roboligent Robin - Inference"
@@ -446,10 +449,9 @@ func (bs *BridgeService) getActionDescriptionFromParams(orderType string, params
 	if desc := bs.getStringFromParams(params, "actionDescription"); desc != "" {
 		return desc
 	}
-
 	switch orderType {
 	case "inference":
-		return "This is an action will trigger the behavior tree for executing inference."
+		return "This action will trigger the behavior tree for executing inference."
 	case "trajectory":
 		return "This action will trigger the behavior tree for following a recorded trajectory."
 	default:
@@ -459,33 +461,22 @@ func (bs *BridgeService) getActionDescriptionFromParams(orderType string, params
 
 func (bs *BridgeService) buildActionParameters(orderType string, params map[string]interface{}) []models.ActionParameter {
 	var actionParams []models.ActionParameter
-
-	// Add specific parameters based on order type
 	switch orderType {
 	case "inference":
 		if inferenceName := bs.getStringFromParams(params, "inferenceName"); inferenceName != "" {
-			actionParams = append(actionParams, models.ActionParameter{
-				Key: "inference_name", Value: inferenceName,
-			})
+			actionParams = append(actionParams, models.ActionParameter{Key: "inference_name", Value: inferenceName})
 		}
 	case "trajectory":
 		if trajectoryName := bs.getStringFromParams(params, "trajectoryName"); trajectoryName != "" {
-			actionParams = append(actionParams, models.ActionParameter{
-				Key: "trajectory_name", Value: trajectoryName,
-			})
+			actionParams = append(actionParams, models.ActionParameter{Key: "trajectory_name", Value: trajectoryName})
 		}
 		if arm := bs.getStringFromParams(params, "arm"); arm != "" {
-			actionParams = append(actionParams, models.ActionParameter{
-				Key: "arm", Value: arm,
-			})
+			actionParams = append(actionParams, models.ActionParameter{Key: "arm", Value: arm})
 		}
 	}
-
-	// Add custom parameters
 	if customParams, ok := params["customParameters"].(map[string]interface{}); ok {
 		actionParams = utils.AddCustomParameters(actionParams, customParams)
 	}
-
 	return actionParams
 }
 
@@ -515,54 +506,4 @@ func (bs *BridgeService) getEdgesFromParams(params map[string]interface{}) []mod
 		return edges
 	}
 	return []models.Edge{}
-}
-
-func (bs *BridgeService) updateOrderStatus(orderID, status, errorMessage string) {
-	err := bs.orderExecutionRepo.UpdateOrderStatus(orderID, status, errorMessage)
-	if err != nil {
-		log.Printf("Failed to update order status: %v", err)
-		return
-	}
-
-	log.Printf("Order %s status updated to %s", orderID, status)
-}
-
-// ===================================================================
-// TYPE DEFINITIONS
-// ===================================================================
-
-type CustomInferenceOrderRequest struct {
-	SerialNumber      string                 `json:"serialNumber"`
-	InferenceName     string                 `json:"inferenceName"`
-	Description       string                 `json:"description"`
-	SequenceID        int                    `json:"sequenceId"`
-	Released          bool                   `json:"released"`
-	Position          models.NodePosition    `json:"position"`
-	ActionType        string                 `json:"actionType"`
-	ActionDescription string                 `json:"actionDescription"`
-	BlockingType      string                 `json:"blockingType"`
-	CustomParameters  map[string]interface{} `json:"customParameters"`
-	Edges             []models.Edge          `json:"edges"`
-}
-
-type CustomTrajectoryOrderRequest struct {
-	SerialNumber      string                 `json:"serialNumber"`
-	TrajectoryName    string                 `json:"trajectoryName"`
-	Arm               string                 `json:"arm"`
-	Description       string                 `json:"description"`
-	SequenceID        int                    `json:"sequenceId"`
-	Released          bool                   `json:"released"`
-	Position          models.NodePosition    `json:"position"`
-	ActionType        string                 `json:"actionType"`
-	ActionDescription string                 `json:"actionDescription"`
-	BlockingType      string                 `json:"blockingType"`
-	CustomParameters  map[string]interface{} `json:"customParameters"`
-	Edges             []models.Edge          `json:"edges"`
-}
-
-type DynamicOrderRequest struct {
-	SerialNumber  string        `json:"serialNumber"`
-	OrderUpdateID int           `json:"orderUpdateId"`
-	Nodes         []models.Node `json:"nodes"`
-	Edges         []models.Edge `json:"edges"`
 }

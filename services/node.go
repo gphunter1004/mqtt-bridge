@@ -3,39 +3,66 @@ package services
 import (
 	"fmt"
 
+	"mqtt-bridge/database"
 	"mqtt-bridge/models"
 	"mqtt-bridge/repositories/interfaces"
+	"mqtt-bridge/utils"
 )
 
-// NodeWithActions represents a node template with its associated actions
+// NodeWithActions is a DTO that combines a node template with its fully populated actions.
 type NodeWithActions struct {
 	NodeTemplate models.NodeTemplate     `json:"nodeTemplate"`
 	Actions      []models.ActionTemplate `json:"actions"`
 }
 
+// NodeService handles business logic related to node templates.
 type NodeService struct {
 	nodeRepo      interfaces.NodeRepositoryInterface
-	actionService *ActionService // Changed from actionRepo
+	actionService *ActionService
+	uow           database.UnitOfWorkInterface
 }
 
-func NewNodeService(nodeRepo interfaces.NodeRepositoryInterface, actionService *ActionService) *NodeService {
+// NewNodeService creates a new instance of NodeService.
+func NewNodeService(
+	nodeRepo interfaces.NodeRepositoryInterface,
+	actionService *ActionService,
+	uow database.UnitOfWorkInterface,
+) *NodeService {
 	return &NodeService{
 		nodeRepo:      nodeRepo,
 		actionService: actionService,
+		uow:           uow,
 	}
 }
 
+// CreateNode creates a new node template along with its associated actions within a single transaction.
 func (ns *NodeService) CreateNode(req *models.NodeTemplateRequest) (*models.NodeTemplate, error) {
-	// Check if node with this nodeID already exists
 	exists, err := ns.nodeRepo.CheckNodeExists(req.NodeID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to check node existence: %w", err)
+		return nil, utils.NewInternalServerError("Failed to check for existing node.", err)
 	}
 	if exists {
-		return nil, fmt.Errorf("node with ID '%s' already exists", req.NodeID)
+		return nil, utils.NewBadRequestError(fmt.Sprintf("Node with ID '%s' already exists.", req.NodeID))
 	}
 
-	// Prepare node template
+	tx := ns.uow.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			ns.uow.Rollback(tx)
+			panic(r)
+		}
+	}()
+
+	var actionTemplateIDs []uint
+	if len(req.Actions) > 0 {
+		// Since this is a creation, actions are created within the same transaction.
+		actionTemplateIDs, err = ns.actionService.RecreateActionTemplatesForOwner(tx, "", req.Actions)
+		if err != nil {
+			ns.uow.Rollback(tx)
+			return nil, utils.NewInternalServerError("Failed to create action templates for node.", err)
+		}
+	}
+
 	node := &models.NodeTemplate{
 		NodeID:                req.NodeID,
 		Name:                  req.Name,
@@ -50,79 +77,95 @@ func (ns *NodeService) CreateNode(req *models.NodeTemplateRequest) (*models.Node
 		MapID:                 req.Position.MapID,
 	}
 
-	// Create action templates and collect their IDs
-	var actionTemplateIDs []uint
-	for _, actionReq := range req.Actions {
-		actionTemplate, err := ns.actionService.CreateActionTemplate(&actionReq)
-		if err != nil {
-			// Log error but continue with other actions
-			continue
-		}
-		actionTemplateIDs = append(actionTemplateIDs, actionTemplate.ID)
-	}
-
-	// Set action template IDs in node
 	if len(actionTemplateIDs) > 0 {
 		if err := node.SetActionTemplateIDs(actionTemplateIDs); err != nil {
-			return nil, fmt.Errorf("failed to set action template IDs: %w", err)
+			ns.uow.Rollback(tx)
+			return nil, utils.NewInternalServerError("Failed to set action template IDs on node.", err)
 		}
 	}
 
-	// Create node using repository
-	return ns.nodeRepo.CreateNode(node)
+	createdNode, err := ns.nodeRepo.CreateNode(tx, node)
+	if err != nil {
+		ns.uow.Rollback(tx)
+		return nil, utils.NewInternalServerError("Failed to create node in repository.", err)
+	}
+
+	if err := ns.uow.Commit(tx); err != nil {
+		return nil, utils.NewInternalServerError("Failed to commit transaction for node creation.", err)
+	}
+
+	return createdNode, nil
 }
 
+// GetNode retrieves a single node template by its database ID.
 func (ns *NodeService) GetNode(nodeID uint) (*models.NodeTemplate, error) {
-	return ns.nodeRepo.GetNode(nodeID)
+	node, err := ns.nodeRepo.GetNode(nodeID)
+	if err != nil {
+		return nil, utils.NewNotFoundError(fmt.Sprintf("Node with ID %d not found.", nodeID))
+	}
+	return node, nil
 }
 
+// GetNodeByNodeID retrieves a single node template by its string ID.
 func (ns *NodeService) GetNodeByNodeID(nodeID string) (*models.NodeTemplate, error) {
-	return ns.nodeRepo.GetNodeByNodeID(nodeID)
+	node, err := ns.nodeRepo.GetNodeByNodeID(nodeID)
+	if err != nil {
+		return nil, utils.NewNotFoundError(fmt.Sprintf("Node with nodeId '%s' not found.", nodeID))
+	}
+	return node, nil
 }
 
+// GetNodeWithActions retrieves a node and its fully populated action templates.
 func (ns *NodeService) GetNodeWithActions(nodeID uint) (*NodeWithActions, error) {
-	// Get node and actions using repository
 	node, actions, err := ns.nodeRepo.GetNodeWithActions(nodeID)
 	if err != nil {
-		return nil, err
+		return nil, utils.NewNotFoundError(fmt.Sprintf("Node with ID %d not found.", nodeID))
 	}
-
-	return &NodeWithActions{
-		NodeTemplate: *node,
-		Actions:      actions,
-	}, nil
+	return &NodeWithActions{NodeTemplate: *node, Actions: actions}, nil
 }
 
+// ListNodes retrieves a paginated list of all node templates.
 func (ns *NodeService) ListNodes(limit, offset int) ([]models.NodeTemplate, error) {
-	return ns.nodeRepo.ListNodes(limit, offset)
+	nodes, err := ns.nodeRepo.ListNodes(limit, offset)
+	if err != nil {
+		return nil, utils.NewInternalServerError("Failed to list nodes.", err)
+	}
+	return nodes, nil
 }
 
+// UpdateNode updates an existing node template within a single transaction.
 func (ns *NodeService) UpdateNode(nodeID uint, req *models.NodeTemplateRequest) (*models.NodeTemplate, error) {
-	// Check if node exists
 	existingNode, err := ns.nodeRepo.GetNode(nodeID)
 	if err != nil {
-		return nil, fmt.Errorf("node not found: %w", err)
+		return nil, utils.NewNotFoundError(fmt.Sprintf("Node with ID %d not found for update.", nodeID))
 	}
 
-	// Check for nodeID conflicts (if nodeID is changing)
 	if existingNode.NodeID != req.NodeID {
 		exists, err := ns.nodeRepo.CheckNodeExistsExcluding(req.NodeID, nodeID)
 		if err != nil {
-			return nil, fmt.Errorf("failed to check node ID conflict: %w", err)
+			return nil, utils.NewInternalServerError("Failed to check for node ID conflict.", err)
 		}
 		if exists {
-			return nil, fmt.Errorf("node with ID '%s' already exists", req.NodeID)
+			return nil, utils.NewBadRequestError(fmt.Sprintf("Node with ID '%s' already exists.", req.NodeID))
 		}
 	}
 
-	// Delete old action templates
-	newActionIDs, err := ns.actionService.RecreateActionTemplatesForOwner(existingNode.ActionTemplateIDs, req.Actions)
+	tx := ns.uow.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			ns.uow.Rollback(tx)
+			panic(r)
+		}
+	}()
+
+	// Pass the transaction `tx` to the action service ---
+	newActionIDs, err := ns.actionService.RecreateActionTemplatesForOwner(tx, existingNode.ActionTemplateIDs, req.Actions)
 	if err != nil {
-		return nil, fmt.Errorf("failed to update action templates for node: %w", err)
+		ns.uow.Rollback(tx)
+		return nil, utils.NewInternalServerError("Failed to update action templates for node.", err)
 	}
 
-	// Prepare updated node template
-	node := &models.NodeTemplate{
+	nodeToUpdate := &models.NodeTemplate{
 		NodeID:                req.NodeID,
 		Name:                  req.Name,
 		Description:           req.Description,
@@ -136,17 +179,42 @@ func (ns *NodeService) UpdateNode(nodeID uint, req *models.NodeTemplateRequest) 
 		MapID:                 req.Position.MapID,
 	}
 
-	// Set new action template IDs
-	if len(newActionIDs) > 0 {
-		if err := node.SetActionTemplateIDs(newActionIDs); err != nil {
-			return nil, fmt.Errorf("failed to set action template IDs: %w", err)
-		}
+	if err := nodeToUpdate.SetActionTemplateIDs(newActionIDs); err != nil {
+		ns.uow.Rollback(tx)
+		return nil, utils.NewInternalServerError("Failed to set new action template IDs on node.", err)
 	}
 
-	// Update node using repository
-	return ns.nodeRepo.UpdateNode(nodeID, node)
+	updatedNode, err := ns.nodeRepo.UpdateNode(tx, nodeID, nodeToUpdate)
+	if err != nil {
+		ns.uow.Rollback(tx)
+		return nil, utils.NewInternalServerError("Failed to update node in repository.", err)
+	}
+
+	if err := ns.uow.Commit(tx); err != nil {
+		return nil, utils.NewInternalServerError("Failed to commit transaction for node update.", err)
+	}
+
+	return updatedNode, nil
 }
 
+// DeleteNode deletes a node template and its associations within a single transaction.
 func (ns *NodeService) DeleteNode(nodeID uint) error {
-	return ns.nodeRepo.DeleteNode(nodeID)
+	tx := ns.uow.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			ns.uow.Rollback(tx)
+			panic(r)
+		}
+	}()
+
+	if err := ns.nodeRepo.DeleteNode(tx, nodeID); err != nil {
+		ns.uow.Rollback(tx)
+		return utils.NewInternalServerError(fmt.Sprintf("Failed to delete node with ID %d.", nodeID), err)
+	}
+
+	if err := ns.uow.Commit(tx); err != nil {
+		return utils.NewInternalServerError("Failed to commit transaction for node deletion.", err)
+	}
+
+	return nil
 }

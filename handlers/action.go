@@ -3,7 +3,6 @@ package handlers
 import (
 	"fmt"
 	"net/http"
-	"strconv"
 
 	"mqtt-bridge/models"
 	"mqtt-bridge/services"
@@ -12,65 +11,63 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
+// ActionHandler handles API requests related to action templates.
 type ActionHandler struct {
 	actionService *services.ActionService
 }
 
+// NewActionHandler creates a new instance of ActionHandler.
 func NewActionHandler(actionService *services.ActionService) *ActionHandler {
 	return &ActionHandler{
 		actionService: actionService,
 	}
 }
 
+// CreateActionTemplate creates a new action template.
 func (h *ActionHandler) CreateActionTemplate(c echo.Context) error {
 	var req models.ActionTemplateRequest
-	if err := c.Bind(&req); err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
+	if err := utils.BindAndValidate(c, &req); err != nil {
+		return err
 	}
 
-	action, err := h.actionService.CreateActionTemplate(&req)
+	// The handler layer doesn't manage transactions, so it passes nil.
+	// The service layer will initiate its own transaction.
+	action, err := h.actionService.CreateActionTemplate(nil, &req)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to create action template: %v", err))
+		return err
 	}
 
-	return c.JSON(http.StatusCreated, action)
+	return c.JSON(http.StatusCreated, utils.SuccessResponse("Action template created successfully", action))
 }
 
+// GetActionTemplate retrieves a specific action template by its database ID.
 func (h *ActionHandler) GetActionTemplate(c echo.Context) error {
-	actionIDStr := c.Param("actionId")
-
-	actionID, err := strconv.ParseUint(actionIDStr, 10, 32)
+	actionID, err := utils.ParseUintParam(c, "actionId")
 	if err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, "Invalid action ID")
+		return err
 	}
 
-	action, err := h.actionService.GetActionTemplate(uint(actionID))
+	action, err := h.actionService.GetActionTemplate(actionID)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusNotFound, fmt.Sprintf("Failed to get action template: %v", err))
+		return err
 	}
 
-	return c.JSON(http.StatusOK, action)
+	return c.JSON(http.StatusOK, utils.SuccessResponse("Action template retrieved successfully", action))
 }
 
+// GetActionTemplateByActionID retrieves an action template by its string actionId.
 func (h *ActionHandler) GetActionTemplateByActionID(c echo.Context) error {
 	actionID := c.Param("actionId")
-
 	action, err := h.actionService.GetActionTemplateByActionID(actionID)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusNotFound, fmt.Sprintf("Failed to get action template: %v", err))
+		return err
 	}
-
-	return c.JSON(http.StatusOK, action)
+	return c.JSON(http.StatusOK, utils.SuccessResponse("Action template retrieved successfully", action))
 }
 
+// ListActionTemplates retrieves a list of action templates with optional filters.
 func (h *ActionHandler) ListActionTemplates(c echo.Context) error {
-	// Use the utility function to handle pagination
-	pagination := utils.GetPaginationParams(
-		c.QueryParam("limit"),
-		c.QueryParam("offset"),
-		10, // Default limit
-	)
-
+	pagination := utils.GetPaginationParams(c.QueryParam("limit"), c.QueryParam("offset"), 10)
 	actionType := c.QueryParam("actionType")
 	blockingType := c.QueryParam("blockingType")
 	search := c.QueryParam("search")
@@ -78,7 +75,6 @@ func (h *ActionHandler) ListActionTemplates(c echo.Context) error {
 	var actions []models.ActionTemplate
 	var err error
 
-	// Refactored to use pagination params
 	if search != "" {
 		actions, err = h.actionService.SearchActionTemplates(search, pagination.Limit, pagination.Offset)
 	} else if actionType != "" {
@@ -90,88 +86,70 @@ func (h *ActionHandler) ListActionTemplates(c echo.Context) error {
 	}
 
 	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to list action templates: %v", err))
+		return err
 	}
 
-	response := map[string]interface{}{
-		"actions": actions,
-		"count":   len(actions),
-	}
-
-	return c.JSON(http.StatusOK, response)
+	listResponse := utils.CreateListResponse(actions, len(actions), &pagination)
+	return c.JSON(http.StatusOK, utils.SuccessResponse("Action templates listed successfully", listResponse))
 }
 
+// UpdateActionTemplate updates an existing action template.
 func (h *ActionHandler) UpdateActionTemplate(c echo.Context) error {
-	actionIDStr := c.Param("actionId")
-
-	actionID, err := strconv.ParseUint(actionIDStr, 10, 32)
+	actionID, err := utils.ParseUintParam(c, "actionId")
 	if err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, "Invalid action ID")
+		return err
 	}
 
 	var req models.ActionTemplateRequest
-	if err := c.Bind(&req); err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
+	if err := utils.BindAndValidate(c, &req); err != nil {
+		return err
 	}
 
 	action, err := h.actionService.UpdateActionTemplate(uint(actionID), &req)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to update action template: %v", err))
+		return err
 	}
 
-	return c.JSON(http.StatusOK, action)
+	return c.JSON(http.StatusOK, utils.SuccessResponse("Action template updated successfully", action))
 }
 
+// DeleteActionTemplate deletes an action template.
 func (h *ActionHandler) DeleteActionTemplate(c echo.Context) error {
-	actionIDStr := c.Param("actionId")
-
-	actionID, err := strconv.ParseUint(actionIDStr, 10, 32)
+	actionID, err := utils.ParseUintParam(c, "actionId")
 	if err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, "Invalid action ID")
+		return err
 	}
 
-	err = h.actionService.DeleteActionTemplate(uint(actionID))
-	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to delete action template: %v", err))
+	if err := h.actionService.DeleteActionTemplate(uint(actionID)); err != nil {
+		return err
 	}
 
-	response := map[string]string{
-		"status":  "success",
-		"message": fmt.Sprintf("Action template %d deleted successfully", actionID),
-	}
-
-	return c.JSON(http.StatusOK, response)
+	msg := fmt.Sprintf("Action template %d deleted successfully", actionID)
+	return c.JSON(http.StatusOK, utils.SuccessResponse(msg, nil))
 }
 
+// CloneActionTemplate clones an existing action template.
 func (h *ActionHandler) CloneActionTemplate(c echo.Context) error {
-	actionIDStr := c.Param("actionId")
-
-	actionID, err := strconv.ParseUint(actionIDStr, 10, 32)
+	actionID, err := utils.ParseUintParam(c, "actionId")
 	if err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, "Invalid action ID")
+		return err
 	}
 
 	var req struct {
 		NewActionID string `json:"newActionId"`
 	}
 	if err := c.Bind(&req); err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
+		return utils.NewBadRequestError("Invalid request body: please check JSON format.", err)
 	}
 
 	if req.NewActionID == "" {
-		return echo.NewHTTPError(http.StatusBadRequest, "newActionId is required")
+		return utils.NewBadRequestError("Field 'newActionId' is required.")
 	}
 
 	clonedAction, err := h.actionService.CloneActionTemplate(uint(actionID), req.NewActionID)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to clone action template: %v", err))
+		return err
 	}
 
-	response := map[string]interface{}{
-		"status":       "success",
-		"message":      "Action template cloned successfully",
-		"clonedAction": clonedAction,
-	}
-
-	return c.JSON(http.StatusCreated, response)
+	return c.JSON(http.StatusCreated, utils.SuccessResponse("Action template cloned successfully", clonedAction))
 }

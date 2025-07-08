@@ -3,7 +3,6 @@ package utils
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strconv"
 	"time"
 
@@ -106,18 +105,23 @@ func GetPaginationParams(limitStr, offsetStr string, defaultLimit int) Paginatio
 	}
 	return PaginationParams{Limit: limit, Offset: offset}
 }
+
+// ParseUintParam parses a URL parameter into a uint, returning a custom error on failure.
 func ParseUintParam(c echo.Context, paramName string) (uint, error) {
 	idStr := c.Param(paramName)
 	id, err := strconv.ParseUint(idStr, 10, 32)
 	if err != nil {
-		return 0, echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid %s parameter: must be a positive integer.", paramName))
+		return 0, NewBadRequestError(fmt.Sprintf("Invalid %s parameter: must be a positive integer.", paramName))
 	}
 	return uint(id), nil
 }
+
+// BindAndValidate binds the request body and returns a custom error on failure.
 func BindAndValidate(c echo.Context, req interface{}) error {
 	if err := c.Bind(req); err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
+		return NewBadRequestError("Invalid request body: please check the JSON format.", err)
 	}
+	// TODO: Add validation logic here
 	return nil
 }
 
@@ -166,10 +170,9 @@ func GetUnixTimestamp() int64 {
 }
 
 // ===================================================================
-// VALIDATION HELPERS (RESTORED)
+// VALIDATION HELPERS
 // ===================================================================
 
-// ValidateRequired checks if the provided fields in the map are not empty.
 func ValidateRequired(fields map[string]string) error {
 	for fieldName, value := range fields {
 		if value == "" {

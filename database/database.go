@@ -14,10 +14,10 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+// Database holds the DB connection, all repository instances, and the UnitOfWork.
 type Database struct {
-	DB *gorm.DB
-
-	// Repository interfaces
+	DB                 *gorm.DB
+	UoW                UnitOfWorkInterface
 	ConnectionRepo     interfaces.ConnectionRepositoryInterface
 	FactsheetRepo      interfaces.FactsheetRepositoryInterface
 	ActionRepo         interfaces.ActionRepositoryInterface
@@ -27,6 +27,7 @@ type Database struct {
 	OrderExecutionRepo interfaces.OrderExecutionRepositoryInterface
 }
 
+// NewDatabase creates a new database connection and initializes repositories.
 func NewDatabase(cfg *config.Config) (*Database, error) {
 	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable TimeZone=Asia/Seoul",
 		cfg.DBHost, cfg.DBUser, cfg.DBPassword, cfg.DBName, cfg.DBPort)
@@ -39,36 +40,23 @@ func NewDatabase(cfg *config.Config) (*Database, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
-
 	log.Println("[DB] Database connected successfully")
 
 	// Auto migrate the schema
 	log.Println("[DB] Starting database migration...")
 	err = db.AutoMigrate(
-		&models.ConnectionState{},
-		&models.ConnectionStateHistory{},
-		&models.AgvAction{},
-		&models.AgvActionParameter{},
-		&models.PhysicalParameter{},
-		&models.TypeSpecification{},
-		&models.ActionTemplate{},
-		&models.ActionParameterTemplate{},
-		&models.OrderTemplate{},
-		&models.OrderExecution{},
-		&models.NodeTemplate{},
-		&models.EdgeTemplate{},
-		&models.OrderTemplateNode{},
-		&models.OrderTemplateEdge{},
+		&models.ConnectionState{}, &models.ConnectionStateHistory{},
+		&models.AgvAction{}, &models.AgvActionParameter{},
+		&models.PhysicalParameter{}, &models.TypeSpecification{},
+		&models.ActionTemplate{}, &models.ActionParameterTemplate{},
+		&models.OrderTemplate{}, &models.OrderExecution{},
+		&models.NodeTemplate{}, &models.EdgeTemplate{},
+		&models.OrderTemplateNode{}, &models.OrderTemplateEdge{},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %w", err)
 	}
-
 	log.Println("[DB] Database migration completed successfully")
-
-	var tableNames []string
-	db.Raw("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'").Scan(&tableNames)
-	log.Printf("[DB] Created tables: %v", tableNames)
 
 	// Initialize repositories
 	connectionRepo := repositories.NewConnectionRepository(db)
@@ -80,9 +68,8 @@ func NewDatabase(cfg *config.Config) (*Database, error) {
 	orderExecutionRepo := repositories.NewOrderExecutionRepository(db)
 
 	return &Database{
-		DB: db,
-
-		// Assign repository interfaces
+		DB:                 db,
+		UoW:                NewUnitOfWork(db), // Initialize UnitOfWork here
 		ConnectionRepo:     connectionRepo,
 		FactsheetRepo:      factsheetRepo,
 		ActionRepo:         actionRepo,
@@ -93,15 +80,13 @@ func NewDatabase(cfg *config.Config) (*Database, error) {
 	}, nil
 }
 
-// Legacy methods for backward compatibility (deprecated - use repositories instead)
-// These methods delegate to the appropriate repositories
-
-func (d *Database) SaveConnectionState(connectionMsg *models.ConnectionMessage) error {
-	return d.ConnectionRepo.SaveConnectionState(connectionMsg)
+// Legacy methods for backward compatibility, though direct repository usage is preferred.
+func (d *Database) SaveConnectionState(tx *gorm.DB, connectionMsg *models.ConnectionMessage) error {
+	return d.ConnectionRepo.SaveConnectionState(tx, connectionMsg)
 }
 
-func (d *Database) SaveOrUpdateFactsheet(factsheetMsg *models.FactsheetMessage) error {
-	return d.FactsheetRepo.SaveOrUpdateFactsheet(factsheetMsg)
+func (d *Database) SaveOrUpdateFactsheet(tx *gorm.DB, factsheetMsg *models.FactsheetMessage) error {
+	return d.FactsheetRepo.SaveOrUpdateFactsheet(tx, factsheetMsg)
 }
 
 func (d *Database) GetLastConnectionState(serialNumber string) (*models.ConnectionState, error) {
