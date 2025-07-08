@@ -8,6 +8,7 @@ import (
 
 	"mqtt-bridge/models"
 	"mqtt-bridge/services"
+	"mqtt-bridge/utils"
 
 	"github.com/labstack/echo/v4"
 )
@@ -48,7 +49,7 @@ func (h *OrderHandler) CreateOrderTemplate(c echo.Context) error {
 	}
 
 	logger.Info("Order template created successfully", "templateId", template.ID)
-	return c.JSON(http.StatusCreated, template)
+	return c.JSON(http.StatusCreated, utils.SuccessResponse("Order template created successfully", template))
 }
 
 // GetOrderTemplate retrieves a specific order template
@@ -71,7 +72,7 @@ func (h *OrderHandler) GetOrderTemplate(c echo.Context) error {
 	}
 
 	logger.Info("Order template retrieved successfully", "name", template.Name)
-	return c.JSON(http.StatusOK, template)
+	return c.JSON(http.StatusOK, utils.SuccessResponse("Order template retrieved successfully", template))
 }
 
 // GetOrderTemplateWithDetails retrieves a template with associated nodes and edges
@@ -97,7 +98,7 @@ func (h *OrderHandler) GetOrderTemplateWithDetails(c echo.Context) error {
 		"name", templateDetails.OrderTemplate.Name,
 		"nodesCount", len(templateDetails.NodesWithActions),
 		"edgesCount", len(templateDetails.EdgesWithActions))
-	return c.JSON(http.StatusOK, templateDetails)
+	return c.JSON(http.StatusOK, utils.SuccessResponse("Order template details retrieved successfully", templateDetails))
 }
 
 // ListOrderTemplates retrieves all order templates
@@ -128,13 +129,9 @@ func (h *OrderHandler) ListOrderTemplates(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to list order templates: %v", err))
 	}
 
-	response := map[string]interface{}{
-		"templates": templates,
-		"count":     len(templates),
-	}
-
+	listResponse := utils.CreateListResponse(templates, len(templates), &utils.PaginationParams{Limit: limit, Offset: offset})
 	logger.Info("Order templates listed successfully", "count", len(templates))
-	return c.JSON(http.StatusOK, response)
+	return c.JSON(http.StatusOK, utils.SuccessResponse("Order templates listed successfully", listResponse))
 }
 
 // UpdateOrderTemplate updates an existing order template
@@ -168,7 +165,7 @@ func (h *OrderHandler) UpdateOrderTemplate(c echo.Context) error {
 	}
 
 	logger.Info("Order template updated successfully")
-	return c.JSON(http.StatusOK, template)
+	return c.JSON(http.StatusOK, utils.SuccessResponse("Order template updated successfully", template))
 }
 
 // DeleteOrderTemplate deletes an order template
@@ -190,13 +187,9 @@ func (h *OrderHandler) DeleteOrderTemplate(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to delete order template: %v", err))
 	}
 
-	response := map[string]string{
-		"status":  "success",
-		"message": fmt.Sprintf("Order template %d deleted successfully", id),
-	}
-
+	msg := fmt.Sprintf("Order template %d deleted successfully", id)
 	logger.Info("Order template deleted successfully")
-	return c.JSON(http.StatusOK, response)
+	return c.JSON(http.StatusOK, utils.SuccessResponse(msg, nil))
 }
 
 // Order Execution
@@ -222,7 +215,7 @@ func (h *OrderHandler) ExecuteOrder(c echo.Context) error {
 	}
 
 	logger.Info("Order executed successfully", "orderId", execution.OrderID, "status", execution.Status)
-	return c.JSON(http.StatusCreated, execution)
+	return c.JSON(http.StatusCreated, utils.SuccessResponse("Order executed successfully", execution))
 }
 
 // ExecuteOrderByTemplate executes an order template by template ID
@@ -268,7 +261,7 @@ func (h *OrderHandler) ExecuteOrderByTemplate(c echo.Context) error {
 	}
 
 	logger.Info("Order executed successfully by template", "orderId", execution.OrderID, "status", execution.Status)
-	return c.JSON(http.StatusCreated, execution)
+	return c.JSON(http.StatusCreated, utils.SuccessResponse("Order executed successfully", execution))
 }
 
 // GetOrderExecution retrieves a specific order execution
@@ -293,7 +286,7 @@ func (h *OrderHandler) GetOrderExecution(c echo.Context) error {
 		"serialNumber", execution.SerialNumber,
 		"status", execution.Status,
 		"templateId", execution.OrderTemplateID)
-	return c.JSON(http.StatusOK, execution)
+	return c.JSON(http.StatusOK, utils.SuccessResponse("Order execution retrieved successfully", execution))
 }
 
 // ListOrderExecutions retrieves order executions
@@ -328,13 +321,9 @@ func (h *OrderHandler) ListOrderExecutions(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to list order executions: %v", err))
 	}
 
-	response := map[string]interface{}{
-		"executions": executions,
-		"count":      len(executions),
-	}
-
+	listResponse := utils.CreateListResponse(executions, len(executions), &utils.PaginationParams{Limit: limit, Offset: offset})
 	logger.Info("Order executions listed successfully", "count", len(executions))
-	return c.JSON(http.StatusOK, response)
+	return c.JSON(http.StatusOK, utils.SuccessResponse("Order executions listed successfully", listResponse))
 }
 
 // GetRobotOrderExecutions retrieves order executions for a specific robot
@@ -379,7 +368,7 @@ func (h *OrderHandler) GetRobotOrderExecutions(c echo.Context) error {
 	}
 
 	logger.Info("Robot order executions retrieved successfully", "count", len(executions))
-	return c.JSON(http.StatusOK, response)
+	return c.JSON(http.StatusOK, utils.SuccessResponse("Robot order executions retrieved successfully", response))
 }
 
 // CancelOrder cancels an order execution
@@ -400,13 +389,9 @@ func (h *OrderHandler) CancelOrder(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to cancel order: %v", err))
 	}
 
-	response := map[string]string{
-		"status":  "success",
-		"message": fmt.Sprintf("Order %s cancelled successfully", orderID),
-	}
-
+	msg := fmt.Sprintf("Order %s cancelled successfully", orderID)
 	logger.Info("Order cancelled successfully")
-	return c.JSON(http.StatusOK, response)
+	return c.JSON(http.StatusOK, utils.SuccessResponse(msg, nil))
 }
 
 // Template Association Management
@@ -439,13 +424,9 @@ func (h *OrderHandler) AssociateNodes(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to associate nodes: %v", err))
 	}
 
-	response := map[string]string{
-		"status":  "success",
-		"message": fmt.Sprintf("Nodes associated successfully with template %d", id),
-	}
-
+	msg := fmt.Sprintf("Nodes associated successfully with template %d", id)
 	logger.Info("Nodes associated successfully")
-	return c.JSON(http.StatusOK, response)
+	return c.JSON(http.StatusOK, utils.SuccessResponse(msg, nil))
 }
 
 // AssociateEdges associates existing edges with a template
@@ -476,11 +457,7 @@ func (h *OrderHandler) AssociateEdges(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to associate edges: %v", err))
 	}
 
-	response := map[string]string{
-		"status":  "success",
-		"message": fmt.Sprintf("Edges associated successfully with template %d", id),
-	}
-
+	msg := fmt.Sprintf("Edges associated successfully with template %d", id)
 	logger.Info("Edges associated successfully")
-	return c.JSON(http.StatusOK, response)
+	return c.JSON(http.StatusOK, utils.SuccessResponse(msg, nil))
 }

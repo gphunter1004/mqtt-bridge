@@ -49,7 +49,7 @@ func (h *EdgeHandler) CreateEdge(c echo.Context) error {
 	}
 
 	logger.Info("Edge template created successfully", "dbId", edge.ID)
-	return c.JSON(http.StatusCreated, edge)
+	return c.JSON(http.StatusCreated, utils.SuccessResponse("Edge created successfully", edge))
 }
 
 // GetEdge retrieves a specific edge by its database ID
@@ -75,7 +75,7 @@ func (h *EdgeHandler) GetEdge(c echo.Context) error {
 		"edgeIdStr", edge.EdgeID,
 		"startNodeId", edge.StartNodeID,
 		"endNodeId", edge.EndNodeID)
-	return c.JSON(http.StatusOK, edge)
+	return c.JSON(http.StatusOK, utils.SuccessResponse("Edge retrieved successfully", edge))
 }
 
 // GetEdgeByEdgeID retrieves an edge by its edgeId
@@ -94,7 +94,7 @@ func (h *EdgeHandler) GetEdgeByEdgeID(c echo.Context) error {
 		"dbId", edge.ID,
 		"startNodeId", edge.StartNodeID,
 		"endNodeId", edge.EndNodeID)
-	return c.JSON(http.StatusOK, edge)
+	return c.JSON(http.StatusOK, utils.SuccessResponse("Edge retrieved successfully", edge))
 }
 
 // ListEdges retrieves all edges
@@ -115,13 +115,9 @@ func (h *EdgeHandler) ListEdges(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to list edges: %v", err))
 	}
 
-	response := map[string]interface{}{
-		"edges": edges,
-		"count": len(edges),
-	}
-
+	listResponse := utils.CreateListResponse(edges, len(edges), &pagination)
 	logger.Info("Edge templates listed successfully", "count", len(edges))
-	return c.JSON(http.StatusOK, response)
+	return c.JSON(http.StatusOK, utils.SuccessResponse("Edge templates listed successfully", listResponse))
 }
 
 // UpdateEdge updates an existing edge
@@ -157,7 +153,7 @@ func (h *EdgeHandler) UpdateEdge(c echo.Context) error {
 	}
 
 	logger.Info("Edge template updated successfully")
-	return c.JSON(http.StatusOK, edge)
+	return c.JSON(http.StatusOK, utils.SuccessResponse("Edge updated successfully", edge))
 }
 
 // DeleteEdge deletes an edge
@@ -179,11 +175,7 @@ func (h *EdgeHandler) DeleteEdge(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to delete edge: %v", err))
 	}
 
-	response := map[string]string{
-		"status":  "success",
-		"message": fmt.Sprintf("Edge %d deleted successfully", edgeID),
-	}
-
+	msg := fmt.Sprintf("Edge %d deleted successfully", edgeID)
 	logger.Info("Edge template deleted successfully")
-	return c.JSON(http.StatusOK, response)
+	return c.JSON(http.StatusOK, utils.SuccessResponse(msg, nil))
 }
