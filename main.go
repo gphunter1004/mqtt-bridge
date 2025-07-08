@@ -82,11 +82,11 @@ func main() {
 	bridgeService := services.NewBridgeService(db.ConnectionRepo, db.FactsheetRepo, db.OrderExecutionRepo, redisClient, messageService, db.UoW, logger)
 
 	// Initialize Handlers
-	apiHandler := handlers.NewAPIHandler(bridgeService)
-	orderHandler := handlers.NewOrderHandler(orderService)
-	nodeHandler := handlers.NewNodeHandler(nodeService)
-	edgeHandler := handlers.NewEdgeHandler(edgeService)
-	actionHandler := handlers.NewActionHandler(actionService)
+	apiHandler := handlers.NewAPIHandler(bridgeService, logger)
+	orderHandler := handlers.NewOrderHandler(orderService, logger)
+	nodeHandler := handlers.NewNodeHandler(nodeService, logger)
+	edgeHandler := handlers.NewEdgeHandler(edgeService, logger)
+	actionHandler := handlers.NewActionHandler(actionService, logger)
 
 	// Setup Echo Server
 	e := echo.New()
@@ -215,5 +215,4 @@ func setupRoutes(e *echo.Echo, apiHandler *handlers.APIHandler, orderHandler *ha
 	api.PUT("/actions/:actionId", actionHandler.UpdateActionTemplate)
 	api.DELETE("/actions/:actionId", actionHandler.DeleteActionTemplate)
 	api.GET("/actions/by-action-id/:actionId", actionHandler.GetActionTemplateByActionID)
-	api.POST("/actions/:actionId/clone", actionHandler.CloneActionTemplate)
 }
