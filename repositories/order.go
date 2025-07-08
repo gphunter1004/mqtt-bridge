@@ -4,59 +4,53 @@ import (
 	"fmt"
 
 	"mqtt-bridge/models"
+	"mqtt-bridge/repositories/base"
 	"mqtt-bridge/repositories/interfaces"
 
 	"gorm.io/gorm"
 )
 
-// OrderTemplateRepository implements OrderTemplateRepositoryInterface
+// OrderTemplateRepository implements OrderTemplateRepositoryInterface using base CRUD
 type OrderTemplateRepository struct {
+	*base.BaseCRUDRepository[models.OrderTemplate]
 	db *gorm.DB
 }
 
 // NewOrderTemplateRepository creates a new instance of OrderTemplateRepository
 func NewOrderTemplateRepository(db *gorm.DB) interfaces.OrderTemplateRepositoryInterface {
+	baseCRUD := base.NewBaseCRUDRepository[models.OrderTemplate](db, "order_templates")
 	return &OrderTemplateRepository{
-		db: db,
+		BaseCRUDRepository: baseCRUD,
+		db:                 db,
 	}
 }
 
+// ===================================================================
+// ORDER TEMPLATE CRUD OPERATIONS
+// ===================================================================
+
 // CreateOrderTemplate creates a new order template
 func (otr *OrderTemplateRepository) CreateOrderTemplate(template *models.OrderTemplate) (*models.OrderTemplate, error) {
-	if err := otr.db.Create(template).Error; err != nil {
-		return nil, fmt.Errorf("failed to create order template: %w", err)
-	}
-	return otr.GetOrderTemplate(template.ID)
+	return otr.CreateAndGet(template)
 }
 
 // GetOrderTemplate retrieves an order template by ID
 func (otr *OrderTemplateRepository) GetOrderTemplate(id uint) (*models.OrderTemplate, error) {
-	var template models.OrderTemplate
-	err := otr.db.Where("id = ?", id).First(&template).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("order template with ID %d not found", id)
-		}
-		return nil, fmt.Errorf("failed to get order template: %w", err)
-	}
-	return &template, nil
+	return otr.GetByID(id)
 }
 
 // GetOrderTemplateWithDetails retrieves an order template with associated nodes and edges
 func (otr *OrderTemplateRepository) GetOrderTemplateWithDetails(id uint) (*models.OrderTemplate, []models.NodeTemplate, []models.EdgeTemplate, error) {
-	// Get the order template
 	template, err := otr.GetOrderTemplate(id)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	// Get associated nodes
 	nodes, err := otr.GetAssociatedNodes(id)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to get associated nodes: %w", err)
 	}
 
-	// Get associated edges
 	edges, err := otr.GetAssociatedEdges(id)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to get associated edges: %w", err)
@@ -67,19 +61,16 @@ func (otr *OrderTemplateRepository) GetOrderTemplateWithDetails(id uint) (*model
 
 // GetOrderTemplateWithFullDetails retrieves order template with nodes/edges and their actions
 func (otr *OrderTemplateRepository) GetOrderTemplateWithFullDetails(id uint) (*models.OrderTemplate, []models.NodeTemplate, []models.ActionTemplate, []models.EdgeTemplate, []models.ActionTemplate, error) {
-	// Get the order template
 	template, err := otr.GetOrderTemplate(id)
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
 
-	// Get associated nodes
 	nodes, err := otr.GetAssociatedNodes(id)
 	if err != nil {
 		return nil, nil, nil, nil, nil, fmt.Errorf("failed to get associated nodes: %w", err)
 	}
 
-	// Get node actions
 	var nodeActions []models.ActionTemplate
 	for _, node := range nodes {
 		actions, err := otr.getActionTemplatesForNode(node.ID)
@@ -89,13 +80,11 @@ func (otr *OrderTemplateRepository) GetOrderTemplateWithFullDetails(id uint) (*m
 		nodeActions = append(nodeActions, actions...)
 	}
 
-	// Get associated edges
 	edges, err := otr.GetAssociatedEdges(id)
 	if err != nil {
 		return nil, nil, nil, nil, nil, fmt.Errorf("failed to get associated edges: %w", err)
 	}
 
-	// Get edge actions
 	var edgeActions []models.ActionTemplate
 	for _, edge := range edges {
 		actions, err := otr.getActionTemplatesForEdge(edge.ID)
@@ -110,47 +99,22 @@ func (otr *OrderTemplateRepository) GetOrderTemplateWithFullDetails(id uint) (*m
 
 // ListOrderTemplates retrieves all order templates with pagination
 func (otr *OrderTemplateRepository) ListOrderTemplates(limit, offset int) ([]models.OrderTemplate, error) {
-	var templates []models.OrderTemplate
-	query := otr.db.Order("created_at DESC")
-
-	if limit > 0 {
-		query = query.Limit(limit)
-	}
-	if offset > 0 {
-		query = query.Offset(offset)
-	}
-
-	err := query.Find(&templates).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to list order templates: %w", err)
-	}
-
-	return templates, nil
+	return otr.ListWithPagination(limit, offset, "created_at DESC")
 }
 
 // UpdateOrderTemplate updates an existing order template
 func (otr *OrderTemplateRepository) UpdateOrderTemplate(id uint, template *models.OrderTemplate) (*models.OrderTemplate, error) {
-	// Check if template exists
-	if _, err := otr.GetOrderTemplate(id); err != nil {
-		return nil, fmt.Errorf("order template not found: %w", err)
-	}
-
-	// Update the template
 	updateFields := map[string]interface{}{
 		"name":        template.Name,
 		"description": template.Description,
 	}
 
-	if err := otr.db.Model(&models.OrderTemplate{}).Where("id = ?", id).Updates(updateFields).Error; err != nil {
-		return nil, fmt.Errorf("failed to update order template: %w", err)
-	}
-
-	return otr.GetOrderTemplate(id)
+	return otr.UpdateAndGet(id, updateFields)
 }
 
 // DeleteOrderTemplate deletes an order template and its associations
 func (otr *OrderTemplateRepository) DeleteOrderTemplate(id uint) error {
-	return otr.db.Transaction(func(tx *gorm.DB) error {
+	return otr.WithTransaction(func(tx *gorm.DB) error {
 		// Remove node associations
 		if err := otr.removeNodeAssociationsWithTx(tx, id); err != nil {
 			return fmt.Errorf("failed to remove node associations: %w", err)
@@ -161,18 +125,18 @@ func (otr *OrderTemplateRepository) DeleteOrderTemplate(id uint) error {
 			return fmt.Errorf("failed to remove edge associations: %w", err)
 		}
 
-		// Delete the order template
-		if err := tx.Delete(&models.OrderTemplate{}, id).Error; err != nil {
-			return fmt.Errorf("failed to delete order template: %w", err)
-		}
-
-		return nil
+		// Delete the order template using base method
+		return otr.DeleteWithTransaction(tx, id)
 	})
 }
 
+// ===================================================================
+// ASSOCIATION MANAGEMENT
+// ===================================================================
+
 // AssociateNodes associates existing nodes with an order template
 func (otr *OrderTemplateRepository) AssociateNodes(templateID uint, nodeIDs []string) error {
-	return otr.db.Transaction(func(tx *gorm.DB) error {
+	return otr.WithTransaction(func(tx *gorm.DB) error {
 		for _, nodeID := range nodeIDs {
 			if err := otr.associateNodeWithTx(tx, templateID, nodeID); err != nil {
 				return fmt.Errorf("failed to associate node '%s': %w", nodeID, err)
@@ -184,7 +148,7 @@ func (otr *OrderTemplateRepository) AssociateNodes(templateID uint, nodeIDs []st
 
 // AssociateEdges associates existing edges with an order template
 func (otr *OrderTemplateRepository) AssociateEdges(templateID uint, edgeIDs []string) error {
-	return otr.db.Transaction(func(tx *gorm.DB) error {
+	return otr.WithTransaction(func(tx *gorm.DB) error {
 		for _, edgeID := range edgeIDs {
 			if err := otr.associateEdgeWithTx(tx, templateID, edgeID); err != nil {
 				return fmt.Errorf("failed to associate edge '%s': %w", edgeID, err)
@@ -201,7 +165,7 @@ func (otr *OrderTemplateRepository) GetAssociatedNodes(templateID uint) ([]model
 		Preload("NodeTemplate").
 		Find(&nodeAssociations).Error
 	if err != nil {
-		return nil, fmt.Errorf("failed to get associated nodes: %w", err)
+		return nil, base.WrapDBError("get associated nodes", "order_template_nodes", err)
 	}
 
 	var nodes []models.NodeTemplate
@@ -219,7 +183,7 @@ func (otr *OrderTemplateRepository) GetAssociatedEdges(templateID uint) ([]model
 		Preload("EdgeTemplate").
 		Find(&edgeAssociations).Error
 	if err != nil {
-		return nil, fmt.Errorf("failed to get associated edges: %w", err)
+		return nil, base.WrapDBError("get associated edges", "order_template_edges", err)
 	}
 
 	var edges []models.EdgeTemplate
@@ -244,32 +208,22 @@ func (otr *OrderTemplateRepository) RemoveEdgeAssociations(templateID uint) erro
 func (otr *OrderTemplateRepository) GetNodeByNodeID(nodeID string) (*models.NodeTemplate, error) {
 	var node models.NodeTemplate
 	err := otr.db.Where("node_id = ?", nodeID).First(&node).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("node with ID '%s' not found", nodeID)
-		}
-		return nil, fmt.Errorf("failed to get node: %w", err)
-	}
-	return &node, nil
+	return &node, base.HandleDBError("get", "node_templates", fmt.Sprintf("node ID '%s'", nodeID), err)
 }
 
 // GetEdgeByEdgeID retrieves an edge template by its edgeID
 func (otr *OrderTemplateRepository) GetEdgeByEdgeID(edgeID string) (*models.EdgeTemplate, error) {
 	var edge models.EdgeTemplate
 	err := otr.db.Where("edge_id = ?", edgeID).First(&edge).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("edge with ID '%s' not found", edgeID)
-		}
-		return nil, fmt.Errorf("failed to get edge: %w", err)
-	}
-	return &edge, nil
+	return &edge, base.HandleDBError("get", "edge_templates", fmt.Sprintf("edge ID '%s'", edgeID), err)
 }
 
-// Private helper methods
+// ===================================================================
+// PRIVATE HELPER METHODS
+// ===================================================================
 
+// associateNodeWithTx associates a node with template within transaction
 func (otr *OrderTemplateRepository) associateNodeWithTx(tx *gorm.DB, templateID uint, nodeID string) error {
-	// Get node by nodeID
 	node, err := otr.GetNodeByNodeID(nodeID)
 	if err != nil {
 		return fmt.Errorf("node '%s' not found: %w", nodeID, err)
@@ -291,8 +245,8 @@ func (otr *OrderTemplateRepository) associateNodeWithTx(tx *gorm.DB, templateID 
 	return tx.Create(association).Error
 }
 
+// associateEdgeWithTx associates an edge with template within transaction
 func (otr *OrderTemplateRepository) associateEdgeWithTx(tx *gorm.DB, templateID uint, edgeID string) error {
-	// Get edge by edgeID
 	edge, err := otr.GetEdgeByEdgeID(edgeID)
 	if err != nil {
 		return fmt.Errorf("edge '%s' not found: %w", edgeID, err)
@@ -314,14 +268,17 @@ func (otr *OrderTemplateRepository) associateEdgeWithTx(tx *gorm.DB, templateID 
 	return tx.Create(association).Error
 }
 
+// removeNodeAssociationsWithTx removes node associations within transaction
 func (otr *OrderTemplateRepository) removeNodeAssociationsWithTx(tx *gorm.DB, templateID uint) error {
 	return tx.Where("order_template_id = ?", templateID).Delete(&models.OrderTemplateNode{}).Error
 }
 
+// removeEdgeAssociationsWithTx removes edge associations within transaction
 func (otr *OrderTemplateRepository) removeEdgeAssociationsWithTx(tx *gorm.DB, templateID uint) error {
 	return tx.Where("order_template_id = ?", templateID).Delete(&models.OrderTemplateEdge{}).Error
 }
 
+// getActionTemplatesForNode retrieves action templates for a node
 func (otr *OrderTemplateRepository) getActionTemplatesForNode(nodeID uint) ([]models.ActionTemplate, error) {
 	var node models.NodeTemplate
 	err := otr.db.Where("id = ?", nodeID).First(&node).Error
@@ -341,6 +298,7 @@ func (otr *OrderTemplateRepository) getActionTemplatesForNode(nodeID uint) ([]mo
 	return actions, err
 }
 
+// getActionTemplatesForEdge retrieves action templates for an edge
 func (otr *OrderTemplateRepository) getActionTemplatesForEdge(edgeID uint) ([]models.ActionTemplate, error) {
 	var edge models.EdgeTemplate
 	err := otr.db.Where("id = ?", edgeID).First(&edge).Error

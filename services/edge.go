@@ -5,19 +5,25 @@ import (
 
 	"mqtt-bridge/models"
 	"mqtt-bridge/repositories/interfaces"
+	"mqtt-bridge/services/base"
+	"mqtt-bridge/utils"
 )
 
 type EdgeService struct {
-	edgeRepo   interfaces.EdgeRepositoryInterface
-	actionRepo interfaces.ActionRepositoryInterface
+	edgeRepo              interfaces.EdgeRepositoryInterface
+	actionTemplateManager *base.ActionTemplateManager
 }
 
 func NewEdgeService(edgeRepo interfaces.EdgeRepositoryInterface, actionRepo interfaces.ActionRepositoryInterface) *EdgeService {
 	return &EdgeService{
-		edgeRepo:   edgeRepo,
-		actionRepo: actionRepo,
+		edgeRepo:              edgeRepo,
+		actionTemplateManager: base.NewActionTemplateManager(actionRepo),
 	}
 }
+
+// ===================================================================
+// EDGE CRUD OPERATIONS
+// ===================================================================
 
 func (es *EdgeService) CreateEdge(req *models.EdgeTemplateRequest) (*models.EdgeTemplate, error) {
 	// Check if edge with this edgeID already exists
@@ -40,22 +46,19 @@ func (es *EdgeService) CreateEdge(req *models.EdgeTemplateRequest) (*models.Edge
 		EndNodeID:   req.EndNodeID,
 	}
 
-	// Create action templates and collect their IDs
-	var actionTemplateIDs []uint
-	for _, actionReq := range req.Actions {
-		actionTemplate, err := es.createActionTemplate(&actionReq)
-		if err != nil {
-			// Log error but continue with other actions
-			continue
-		}
-		actionTemplateIDs = append(actionTemplateIDs, actionTemplate.ID)
+	// Create action templates using the common manager
+	actionTemplateIDs, err := es.actionTemplateManager.CreateActionTemplates(req.Actions)
+	if err != nil {
+		utils.LogError(utils.LogComponentService, "Failed to create some action templates for edge %s", req.EdgeID)
 	}
 
-	// Set action template IDs in edge
+	// Set action template IDs in edge using utils helper
 	if len(actionTemplateIDs) > 0 {
-		if err := edge.SetActionTemplateIDs(actionTemplateIDs); err != nil {
+		actionIDsJSON, err := utils.ConvertUintSliceToJSON(actionTemplateIDs)
+		if err != nil {
 			return nil, fmt.Errorf("failed to set action template IDs: %w", err)
 		}
+		edge.ActionTemplateIDs = actionIDsJSON
 	}
 
 	// Create edge using repository
@@ -105,11 +108,11 @@ func (es *EdgeService) UpdateEdge(edgeID uint, req *models.EdgeTemplateRequest) 
 		}
 	}
 
-	// Delete old action templates
+	// Delete old action templates using the common manager
 	if existingEdge.ActionTemplateIDs != "" {
-		oldActionIDs, err := existingEdge.GetActionTemplateIDs()
+		oldActionIDs, err := utils.ParseJSONToUintSlice(existingEdge.ActionTemplateIDs)
 		if err == nil && len(oldActionIDs) > 0 {
-			es.deleteActionTemplates(oldActionIDs)
+			es.actionTemplateManager.DeleteActionTemplates(oldActionIDs)
 		}
 	}
 
@@ -124,21 +127,19 @@ func (es *EdgeService) UpdateEdge(edgeID uint, req *models.EdgeTemplateRequest) 
 		EndNodeID:   req.EndNodeID,
 	}
 
-	// Create new action templates
-	var actionTemplateIDs []uint
-	for _, actionReq := range req.Actions {
-		actionTemplate, err := es.createActionTemplate(&actionReq)
-		if err != nil {
-			continue
-		}
-		actionTemplateIDs = append(actionTemplateIDs, actionTemplate.ID)
+	// Create new action templates using the common manager
+	actionTemplateIDs, err := es.actionTemplateManager.CreateActionTemplates(req.Actions)
+	if err != nil {
+		utils.LogError(utils.LogComponentService, "Failed to create some action templates during edge update")
 	}
 
-	// Set new action template IDs
+	// Set new action template IDs using utils helper
 	if len(actionTemplateIDs) > 0 {
-		if err := edge.SetActionTemplateIDs(actionTemplateIDs); err != nil {
+		actionIDsJSON, err := utils.ConvertUintSliceToJSON(actionTemplateIDs)
+		if err != nil {
 			return nil, fmt.Errorf("failed to set action template IDs: %w", err)
 		}
+		edge.ActionTemplateIDs = actionIDsJSON
 	}
 
 	// Update edge using repository
@@ -147,23 +148,4 @@ func (es *EdgeService) UpdateEdge(edgeID uint, req *models.EdgeTemplateRequest) 
 
 func (es *EdgeService) DeleteEdge(edgeID uint) error {
 	return es.edgeRepo.DeleteEdge(edgeID)
-}
-
-// Private helper methods
-
-func (es *EdgeService) createActionTemplate(actionReq *models.ActionTemplateRequest) (*models.ActionTemplate, error) {
-	action := &models.ActionTemplate{
-		ActionType:        actionReq.ActionType,
-		ActionID:          actionReq.ActionID,
-		BlockingType:      actionReq.BlockingType,
-		ActionDescription: actionReq.ActionDescription,
-	}
-
-	return es.actionRepo.CreateActionTemplate(action, actionReq.Parameters)
-}
-
-func (es *EdgeService) deleteActionTemplates(actionIDs []uint) {
-	for _, actionID := range actionIDs {
-		es.actionRepo.DeleteActionTemplate(actionID)
-	}
 }

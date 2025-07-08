@@ -1,42 +1,12 @@
 package utils
 
 import (
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"time"
 
 	"mqtt-bridge/models"
 )
-
-// ===================================================================
-// ID GENERATION HELPERS
-// ===================================================================
-
-// GenerateUniqueID generates a unique ID based on current timestamp
-func GenerateUniqueID() string {
-	return fmt.Sprintf("%x", time.Now().UnixNano())
-}
-
-// GenerateOrderID generates a unique order ID with prefix
-func GenerateOrderID() string {
-	return fmt.Sprintf("order_%s", GenerateUniqueID())
-}
-
-// GenerateNodeID generates a unique node ID with prefix
-func GenerateNodeID() string {
-	return fmt.Sprintf("node_%s", GenerateUniqueID())
-}
-
-// GenerateEdgeID generates a unique edge ID with prefix
-func GenerateEdgeID() string {
-	return fmt.Sprintf("edge_%s", GenerateUniqueID())
-}
-
-// GenerateActionID generates a unique action ID with prefix
-func GenerateActionID() string {
-	return fmt.Sprintf("action_%s", GenerateUniqueID())
-}
 
 // ===================================================================
 // STRING HELPERS
@@ -102,53 +72,6 @@ func GetPaginationParams(limitStr, offsetStr string, defaultLimit int) Paginatio
 		Limit:  limit,
 		Offset: offset,
 	}
-}
-
-// ===================================================================
-// JSON HELPERS
-// ===================================================================
-
-// ConvertValueToString converts interface{} to JSON string based on type
-func ConvertValueToString(value interface{}, valueType string) (string, error) {
-	if value == nil {
-		return "", nil
-	}
-
-	switch valueType {
-	case "string":
-		if str, ok := value.(string); ok {
-			return str, nil
-		}
-		return fmt.Sprintf("%v", value), nil
-	case "object", "number", "boolean":
-		jsonBytes, err := json.Marshal(value)
-		if err != nil {
-			return "", err
-		}
-		return string(jsonBytes), nil
-	default:
-		return fmt.Sprintf("%v", value), nil
-	}
-}
-
-// ParseJSONToUintSlice parses JSON string to []uint
-func ParseJSONToUintSlice(jsonStr string) ([]uint, error) {
-	if jsonStr == "" {
-		return []uint{}, nil
-	}
-
-	var ids []uint
-	err := json.Unmarshal([]byte(jsonStr), &ids)
-	return ids, err
-}
-
-// ConvertUintSliceToJSON converts []uint to JSON string
-func ConvertUintSliceToJSON(ids []uint) (string, error) {
-	data, err := json.Marshal(ids)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
 }
 
 // ===================================================================
@@ -244,24 +167,6 @@ func ValidateRequired(fields map[string]string) error {
 	return nil
 }
 
-// ValidateNodeRequest validates node template request
-func ValidateNodeRequest(req interface{}) error {
-	// Can be extended based on specific validation needs
-	return nil
-}
-
-// ValidateEdgeRequest validates edge template request
-func ValidateEdgeRequest(req interface{}) error {
-	// Can be extended based on specific validation needs
-	return nil
-}
-
-// ValidateActionRequest validates action template request
-func ValidateActionRequest(req interface{}) error {
-	// Can be extended based on specific validation needs
-	return nil
-}
-
 // ===================================================================
 // RESPONSE HELPERS
 // ===================================================================
@@ -311,31 +216,6 @@ func CreateListResponse(items interface{}, count int, pagination *PaginationPara
 	}
 
 	return response
-}
-
-// ===================================================================
-// DATABASE HELPERS
-// ===================================================================
-
-// UpdateFields represents fields to update in database
-type UpdateFields map[string]interface{}
-
-// CreateUpdateFields creates update fields with timestamp
-func CreateUpdateFields(fields map[string]interface{}) UpdateFields {
-	update := make(UpdateFields)
-	for k, v := range fields {
-		update[k] = v
-	}
-	update["updated_at"] = time.Now()
-	return update
-}
-
-// AddCompletionFields adds completion timestamp and status
-func (uf UpdateFields) AddCompletionFields(status string) UpdateFields {
-	if status == "COMPLETED" || status == "FAILED" || status == "CANCELLED" {
-		uf["completed_at"] = time.Now()
-	}
-	return uf
 }
 
 // ===================================================================
@@ -390,41 +270,15 @@ func IsValidConnectionState(state string) bool {
 }
 
 // ===================================================================
-// LOGGING HELPERS
+// MANUFACTURER HELPERS
 // ===================================================================
 
-// LogOperation represents an operation type for logging
-type LogOperation string
-
-const (
-	LogOpCreate  LogOperation = "CREATE"
-	LogOpUpdate  LogOperation = "UPDATE"
-	LogOpDelete  LogOperation = "DELETE"
-	LogOpExecute LogOperation = "EXECUTE"
-)
-
-// LogInfo represents structured log information
-type LogInfo struct {
-	Operation  LogOperation `json:"operation"`
-	Resource   string       `json:"resource"`
-	ResourceID string       `json:"resourceId"`
-	Message    string       `json:"message"`
-	Timestamp  time.Time    `json:"timestamp"`
+// GetDefaultManufacturer returns default manufacturer name
+func GetDefaultManufacturer() string {
+	return "Roboligent"
 }
 
-// CreateLogInfo creates structured log information
-func CreateLogInfo(operation LogOperation, resource, resourceID, message string) LogInfo {
-	return LogInfo{
-		Operation:  operation,
-		Resource:   resource,
-		ResourceID: resourceID,
-		Message:    message,
-		Timestamp:  time.Now(),
-	}
-}
-
-// FormatLogMessage formats log message with operation info
-func (li LogInfo) FormatLogMessage() string {
-	return fmt.Sprintf("[%s] %s %s (ID: %s): %s",
-		li.Operation, li.Resource, li.ResourceID, li.ResourceID, li.Message)
+// GetManufacturerOrDefault returns manufacturer or default if empty
+func GetManufacturerOrDefault(manufacturer string) string {
+	return GetValueOrDefault(manufacturer, GetDefaultManufacturer())
 }

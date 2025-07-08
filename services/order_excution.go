@@ -2,20 +2,21 @@ package services
 
 import (
 	"fmt"
-	"time"
 
 	"mqtt-bridge/models"
 	"mqtt-bridge/mqtt"
 	"mqtt-bridge/redis"
 	"mqtt-bridge/repositories/interfaces"
+	"mqtt-bridge/services/base"
+	"mqtt-bridge/utils"
 )
 
 type OrderExecutionService struct {
-	orderExecutionRepo interfaces.OrderExecutionRepositoryInterface
-	orderTemplateRepo  interfaces.OrderTemplateRepositoryInterface
-	connectionRepo     interfaces.ConnectionRepositoryInterface
-	redis              *redis.RedisClient
-	mqttClient         *mqtt.Client
+	orderExecutionRepo  interfaces.OrderExecutionRepositoryInterface
+	orderTemplateRepo   interfaces.OrderTemplateRepositoryInterface
+	redis               *redis.RedisClient
+	mqttClient          *mqtt.Client
+	manufacturerManager *base.ManufacturerManager
 }
 
 func NewOrderExecutionService(
@@ -26,39 +27,30 @@ func NewOrderExecutionService(
 	mqttClient *mqtt.Client,
 ) *OrderExecutionService {
 	return &OrderExecutionService{
-		orderExecutionRepo: orderExecutionRepo,
-		orderTemplateRepo:  orderTemplateRepo,
-		connectionRepo:     connectionRepo,
-		redis:              redisClient,
-		mqttClient:         mqttClient,
+		orderExecutionRepo:  orderExecutionRepo,
+		orderTemplateRepo:   orderTemplateRepo,
+		redis:               redisClient,
+		mqttClient:          mqttClient,
+		manufacturerManager: base.NewManufacturerManager(connectionRepo),
 	}
 }
 
 func (oes *OrderExecutionService) GetRobotManufacturer(serialNumber string) string {
-	manufacturer, err := oes.connectionRepo.GetRobotManufacturer(serialNumber)
-	if err != nil {
-		return "Roboligent" // Default fallback
-	}
-	return manufacturer
+	return oes.manufacturerManager.GetRobotManufacturer(serialNumber)
 }
 
 func (oes *OrderExecutionService) ExecuteOrder(req *models.ExecuteOrderRequest) (*models.OrderExecutionResponse, error) {
-	// Get template with details using repository
 	template, nodes, edges, err := oes.orderTemplateRepo.GetOrderTemplateWithDetails(req.TemplateID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get order template: %w", err)
 	}
 
-	// Check robot connection status
-	connectionStatus, err := oes.redis.GetConnectionStatus(req.SerialNumber)
-	if err != nil || connectionStatus != "ONLINE" {
+	if !oes.redis.IsRobotOnline(req.SerialNumber) {
 		return nil, fmt.Errorf("robot %s is not online", req.SerialNumber)
 	}
 
-	// Generate unique order ID
-	orderID := oes.generateUniqueOrderID()
+	orderID := utils.GenerateUniqueOrderID()
 
-	// Create order execution record
 	execution := &models.OrderExecution{
 		OrderID:         orderID,
 		OrderTemplateID: &template.ID,
@@ -72,20 +64,17 @@ func (oes *OrderExecutionService) ExecuteOrder(req *models.ExecuteOrderRequest) 
 		return nil, fmt.Errorf("failed to create order execution record: %w", err)
 	}
 
-	// Convert template to order message
 	orderMsg, err := oes.convertTemplateToOrderMessage(template, nodes, edges, orderID, req.SerialNumber, req.ParameterOverrides)
 	if err != nil {
 		oes.orderExecutionRepo.SetOrderFailed(orderID, err.Error())
 		return nil, fmt.Errorf("failed to convert template to order: %w", err)
 	}
 
-	// Send order via MQTT
 	if err := oes.mqttClient.SendOrder(req.SerialNumber, orderMsg); err != nil {
 		oes.orderExecutionRepo.SetOrderFailed(orderID, err.Error())
 		return nil, fmt.Errorf("failed to send order: %w", err)
 	}
 
-	// Update execution status to SENT
 	oes.orderExecutionRepo.SetOrderStarted(orderID)
 
 	return &models.OrderExecutionResponse{
@@ -97,92 +86,64 @@ func (oes *OrderExecutionService) ExecuteOrder(req *models.ExecuteOrderRequest) 
 	}, nil
 }
 
-func (oes *OrderExecutionService) convertTemplateToOrderMessage(
-	template *models.OrderTemplate,
-	nodes []models.NodeTemplate,
-	edges []models.EdgeTemplate,
-	orderID, serialNumber string,
-	paramOverrides map[string]interface{},
-) (*models.OrderMessage, error) {
-	manufacturer := oes.GetRobotManufacturer(serialNumber)
-
-	// Convert node templates to nodes
-	orderNodes := make([]models.Node, len(nodes))
-	for i, nodeTemplate := range nodes {
-		node := nodeTemplate.ToNode()
-
-		// Get action templates for this node and convert to actions
-		actionIDs, err := nodeTemplate.GetActionTemplateIDs()
-		if err == nil && len(actionIDs) > 0 {
-			actions := make([]models.Action, 0, len(actionIDs))
-			for _, actionID := range actionIDs {
-				// Note: In a full implementation, you'd get action templates from repository
-				// For now, we'll create empty actions array
-				actions = append(actions, models.Action{
-					ActionType:       "default",
-					ActionID:         fmt.Sprintf("action_%d", actionID),
-					BlockingType:     "NONE",
-					ActionParameters: []models.ActionParameter{},
-				})
-			}
-			node.Actions = actions
-		}
-
-		// Apply parameter overrides if provided
-		if paramOverrides != nil {
-			for j := range node.Actions {
-				oes.applyParameterOverrides(&node.Actions[j], paramOverrides)
-			}
-		}
-
-		orderNodes[i] = node
-	}
-
-	// Convert edge templates to edges
-	orderEdges := make([]models.Edge, len(edges))
-	for i, edgeTemplate := range edges {
-		edge := edgeTemplate.ToEdge()
-
-		// Get action templates for this edge and convert to actions
-		actionIDs, err := edgeTemplate.GetActionTemplateIDs()
-		if err == nil && len(actionIDs) > 0 {
-			actions := make([]models.Action, 0, len(actionIDs))
-			for _, actionID := range actionIDs {
-				// Note: In a full implementation, you'd get action templates from repository
-				// For now, we'll create empty actions array
-				actions = append(actions, models.Action{
-					ActionType:       "default",
-					ActionID:         fmt.Sprintf("action_%d", actionID),
-					BlockingType:     "NONE",
-					ActionParameters: []models.ActionParameter{},
-				})
-			}
-			edge.Actions = actions
-		}
-
-		// Apply parameter overrides if provided
-		if paramOverrides != nil {
-			for j := range edge.Actions {
-				oes.applyParameterOverrides(&edge.Actions[j], paramOverrides)
-			}
-		}
-
-		orderEdges[i] = edge
-	}
-
-	orderMsg := &models.OrderMessage{
+func (oes *OrderExecutionService) convertTemplateToOrderMessage(template *models.OrderTemplate, nodes []models.NodeTemplate, edges []models.EdgeTemplate, orderID, serialNumber string, paramOverrides map[string]interface{}) (*models.OrderMessage, error) {
+	return &models.OrderMessage{
 		HeaderID:      1,
-		Timestamp:     time.Now().Format("2006-01-02T15:04:05.000000000Z"),
+		Timestamp:     utils.GetCurrentTimestamp(),
 		Version:       "2.0.0",
-		Manufacturer:  manufacturer,
+		Manufacturer:  oes.GetRobotManufacturer(serialNumber),
 		SerialNumber:  serialNumber,
 		OrderID:       orderID,
 		OrderUpdateID: 0,
-		Nodes:         orderNodes,
-		Edges:         orderEdges,
+		Nodes:         oes.convertNodesToOrder(nodes, paramOverrides),
+		Edges:         oes.convertEdgesToOrder(edges, paramOverrides),
+	}, nil
+}
+
+// 중복되던 노드/엣지 변환 로직 분리
+func (oes *OrderExecutionService) convertNodesToOrder(nodes []models.NodeTemplate, paramOverrides map[string]interface{}) []models.Node {
+	orderNodes := make([]models.Node, len(nodes))
+	for i, nodeTemplate := range nodes {
+		node := nodeTemplate.ToNode()
+		node.Actions = oes.getActionsFromTemplate(nodeTemplate.ActionTemplateIDs, paramOverrides)
+		orderNodes[i] = node
+	}
+	return orderNodes
+}
+
+func (oes *OrderExecutionService) convertEdgesToOrder(edges []models.EdgeTemplate, paramOverrides map[string]interface{}) []models.Edge {
+	orderEdges := make([]models.Edge, len(edges))
+	for i, edgeTemplate := range edges {
+		edge := edgeTemplate.ToEdge()
+		edge.Actions = oes.getActionsFromTemplate(edgeTemplate.ActionTemplateIDs, paramOverrides)
+		orderEdges[i] = edge
+	}
+	return orderEdges
+}
+
+// 공통 액션 생성 로직
+func (oes *OrderExecutionService) getActionsFromTemplate(actionTemplateIDs string, paramOverrides map[string]interface{}) []models.Action {
+	actionIDs, err := utils.ParseJSONToUintSlice(actionTemplateIDs)
+	if err != nil || len(actionIDs) == 0 {
+		return []models.Action{}
 	}
 
-	return orderMsg, nil
+	actions := make([]models.Action, 0, len(actionIDs))
+	for _, actionID := range actionIDs {
+		action := models.Action{
+			ActionType:       "default",
+			ActionID:         fmt.Sprintf("action_%d", actionID),
+			BlockingType:     "NONE",
+			ActionParameters: []models.ActionParameter{},
+		}
+
+		if paramOverrides != nil {
+			oes.applyParameterOverrides(&action, paramOverrides)
+		}
+
+		actions = append(actions, action)
+	}
+	return actions
 }
 
 func (oes *OrderExecutionService) applyParameterOverrides(action *models.Action, overrides map[string]interface{}) {
@@ -191,10 +152,6 @@ func (oes *OrderExecutionService) applyParameterOverrides(action *models.Action,
 			action.ActionParameters[i].Value = overrideValue
 		}
 	}
-}
-
-func (oes *OrderExecutionService) generateUniqueOrderID() string {
-	return fmt.Sprintf("order_%x", time.Now().UnixNano())
 }
 
 func (oes *OrderExecutionService) GetOrderExecution(orderID string) (*models.OrderExecution, error) {
@@ -206,22 +163,26 @@ func (oes *OrderExecutionService) ListOrderExecutions(serialNumber string, limit
 }
 
 func (oes *OrderExecutionService) CancelOrder(orderID string) error {
-	// Get current execution status
 	execution, err := oes.orderExecutionRepo.GetOrderExecution(orderID)
 	if err != nil {
 		return fmt.Errorf("order not found: %w", err)
 	}
 
-	// Check if order can be cancelled
-	if execution.Status == "COMPLETED" || execution.Status == "FAILED" || execution.Status == "CANCELLED" {
+	if !utils.IsValidOrderStatus(execution.Status) ||
+		execution.Status == string(utils.OrderStatusCompleted) ||
+		execution.Status == string(utils.OrderStatusFailed) ||
+		execution.Status == string(utils.OrderStatusCancelled) {
 		return fmt.Errorf("order cannot be cancelled, current status: %s", execution.Status)
 	}
 
-	// Cancel the order
 	return oes.orderExecutionRepo.SetOrderCancelled(orderID, "Order cancelled by user")
 }
 
 func (oes *OrderExecutionService) UpdateOrderStatus(orderID, status string, errorMessage ...string) error {
+	if !utils.IsValidOrderStatus(status) {
+		return fmt.Errorf("invalid order status: %s", status)
+	}
+
 	var errMsg string
 	if len(errorMessage) > 0 && errorMessage[0] != "" {
 		errMsg = errorMessage[0]
@@ -230,27 +191,15 @@ func (oes *OrderExecutionService) UpdateOrderStatus(orderID, status string, erro
 	return oes.orderExecutionRepo.UpdateOrderStatus(orderID, status, errMsg)
 }
 
-func (oes *OrderExecutionService) getOrderStatus(orderID string) string {
-	status, err := oes.orderExecutionRepo.GetOrderStatus(orderID)
-	if err != nil {
-		return "UNKNOWN"
-	}
-	return status
-}
-
 func (oes *OrderExecutionService) ExecuteDirectOrder(serialNumber string, orderData *models.OrderMessage) (*models.OrderExecutionResponse, error) {
-	// Check robot connection status
-	connectionStatus, err := oes.redis.GetConnectionStatus(serialNumber)
-	if err != nil || connectionStatus != "ONLINE" {
+	if !oes.redis.IsRobotOnline(serialNumber) {
 		return nil, fmt.Errorf("robot %s is not online", serialNumber)
 	}
 
-	// Set manufacturer if not provided
 	if orderData.Manufacturer == "" {
 		orderData.Manufacturer = oes.GetRobotManufacturer(serialNumber)
 	}
 
-	// Create order execution record
 	execution := &models.OrderExecution{
 		OrderID:       orderData.OrderID,
 		SerialNumber:  serialNumber,
@@ -263,13 +212,11 @@ func (oes *OrderExecutionService) ExecuteDirectOrder(serialNumber string, orderD
 		return nil, fmt.Errorf("failed to create order execution record: %w", err)
 	}
 
-	// Send order via MQTT
 	if err := oes.mqttClient.SendOrder(serialNumber, orderData); err != nil {
 		oes.orderExecutionRepo.SetOrderFailed(orderData.OrderID, err.Error())
 		return nil, fmt.Errorf("failed to send direct order: %w", err)
 	}
 
-	// Update execution status to SENT
 	oes.orderExecutionRepo.SetOrderStarted(orderData.OrderID)
 
 	return &models.OrderExecutionResponse{

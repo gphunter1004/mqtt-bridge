@@ -4,58 +4,69 @@ import (
 	"fmt"
 
 	"mqtt-bridge/models"
+	"mqtt-bridge/repositories/base"
 	"mqtt-bridge/repositories/interfaces"
+	"mqtt-bridge/utils"
 
 	"gorm.io/gorm"
 )
 
-// ConnectionRepository implements ConnectionRepositoryInterface
+// ConnectionRepository implements ConnectionRepositoryInterface using base CRUD
 type ConnectionRepository struct {
+	*base.BaseCRUDRepository[models.ConnectionState]
 	db *gorm.DB
 }
 
 // NewConnectionRepository creates a new instance of ConnectionRepository
 func NewConnectionRepository(db *gorm.DB) interfaces.ConnectionRepositoryInterface {
+	baseCRUD := base.NewBaseCRUDRepository[models.ConnectionState](db, "connection_states")
 	return &ConnectionRepository{
-		db: db,
+		BaseCRUDRepository: baseCRUD,
+		db:                 db,
 	}
 }
 
+// ===================================================================
+// CONNECTION STATE OPERATIONS
+// ===================================================================
+
 // SaveConnectionState saves or updates the connection state for a robot
 func (cr *ConnectionRepository) SaveConnectionState(connectionMsg *models.ConnectionMessage) error {
-	// Save current connection state (upsert)
-	connectionState := &models.ConnectionState{
-		SerialNumber:    connectionMsg.SerialNumber,
-		ConnectionState: connectionMsg.ConnectionState,
-		HeaderID:        connectionMsg.HeaderID,
-		Timestamp:       connectionMsg.Timestamp,
-		Version:         connectionMsg.Version,
-		Manufacturer:    connectionMsg.Manufacturer,
-	}
+	return cr.WithTransaction(func(tx *gorm.DB) error {
+		// Save current connection state (upsert)
+		connectionState := &models.ConnectionState{
+			SerialNumber:    connectionMsg.SerialNumber,
+			ConnectionState: connectionMsg.ConnectionState,
+			HeaderID:        connectionMsg.HeaderID,
+			Timestamp:       connectionMsg.Timestamp,
+			Version:         connectionMsg.Version,
+			Manufacturer:    connectionMsg.Manufacturer,
+		}
 
-	err := cr.db.Where("serial_number = ?", connectionMsg.SerialNumber).
-		Assign(connectionState).
-		FirstOrCreate(connectionState).Error
+		err := tx.Where("serial_number = ?", connectionMsg.SerialNumber).
+			Assign(connectionState).
+			FirstOrCreate(connectionState).Error
 
-	if err != nil {
-		return fmt.Errorf("failed to save connection state: %w", err)
-	}
+		if err != nil {
+			return base.WrapDBError("save connection state", "connection_states", err)
+		}
 
-	// Save to history (always create new record)
-	connectionHistory := &models.ConnectionStateHistory{
-		SerialNumber:    connectionMsg.SerialNumber,
-		ConnectionState: connectionMsg.ConnectionState,
-		HeaderID:        connectionMsg.HeaderID,
-		Timestamp:       connectionMsg.Timestamp,
-		Version:         connectionMsg.Version,
-		Manufacturer:    connectionMsg.Manufacturer,
-	}
+		// Save to history (always create new record)
+		connectionHistory := &models.ConnectionStateHistory{
+			SerialNumber:    connectionMsg.SerialNumber,
+			ConnectionState: connectionMsg.ConnectionState,
+			HeaderID:        connectionMsg.HeaderID,
+			Timestamp:       connectionMsg.Timestamp,
+			Version:         connectionMsg.Version,
+			Manufacturer:    connectionMsg.Manufacturer,
+		}
 
-	if err := cr.db.Create(connectionHistory).Error; err != nil {
-		return fmt.Errorf("failed to save connection history: %w", err)
-	}
+		if err := tx.Create(connectionHistory).Error; err != nil {
+			return base.WrapDBError("save connection history", "connection_state_histories", err)
+		}
 
-	return nil
+		return nil
+	})
 }
 
 // GetLastConnectionState retrieves the most recent connection state for a robot
@@ -65,14 +76,7 @@ func (cr *ConnectionRepository) GetLastConnectionState(serialNumber string) (*mo
 		Order("created_at desc").
 		First(&connectionState).Error
 
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("connection state not found for robot %s", serialNumber)
-		}
-		return nil, fmt.Errorf("failed to get connection state: %w", err)
-	}
-
-	return &connectionState, nil
+	return &connectionState, base.HandleDBError("get", "connection_states", fmt.Sprintf("serial number '%s'", serialNumber), err)
 }
 
 // GetConnectionHistory retrieves connection history for a robot with pagination
@@ -86,7 +90,7 @@ func (cr *ConnectionRepository) GetConnectionHistory(serialNumber string, limit 
 
 	err := query.Find(&connections).Error
 	if err != nil {
-		return nil, fmt.Errorf("failed to get connection history: %w", err)
+		return nil, base.WrapDBError("get connection history", "connection_states", err)
 	}
 
 	return connections, nil
@@ -106,7 +110,7 @@ func (cr *ConnectionRepository) GetConnectedRobots() ([]string, error) {
 	`).Scan(&connections).Error
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to get connected robots: %w", err)
+		return nil, base.WrapDBError("get connected robots", "connection_states", err)
 	}
 
 	for _, conn := range connections {
@@ -126,14 +130,11 @@ func (cr *ConnectionRepository) GetRobotManufacturer(serialNumber string) (strin
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			// Return default manufacturer if no connection record found
-			return "Roboligent", nil
+			utils.LogWarn(utils.LogComponentDB, "No connection record found for robot %s, using default manufacturer", serialNumber)
+			return utils.GetDefaultManufacturer(), nil
 		}
-		return "", fmt.Errorf("failed to get robot manufacturer: %w", err)
+		return "", base.WrapDBError("get robot manufacturer", "connection_states", err)
 	}
 
-	if connectionState.Manufacturer == "" {
-		return "Roboligent", nil
-	}
-
-	return connectionState.Manufacturer, nil
+	return utils.GetManufacturerOrDefault(connectionState.Manufacturer), nil
 }

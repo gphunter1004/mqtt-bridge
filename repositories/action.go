@@ -4,54 +4,54 @@ import (
 	"fmt"
 
 	"mqtt-bridge/models"
+	"mqtt-bridge/repositories/base"
 	"mqtt-bridge/repositories/interfaces"
 	"mqtt-bridge/utils"
 
 	"gorm.io/gorm"
 )
 
-// ActionRepository implements ActionRepositoryInterface
+// ActionRepository implements ActionRepositoryInterface using base CRUD
 type ActionRepository struct {
+	*base.BaseCRUDRepository[models.ActionTemplate]
 	db *gorm.DB
 }
 
 // NewActionRepository creates a new instance of ActionRepository
 func NewActionRepository(db *gorm.DB) interfaces.ActionRepositoryInterface {
+	baseCRUD := base.NewBaseCRUDRepository[models.ActionTemplate](db, "action_templates")
 	return &ActionRepository{
-		db: db,
+		BaseCRUDRepository: baseCRUD,
+		db:                 db,
 	}
 }
+
+// ===================================================================
+// ACTION TEMPLATE CRUD OPERATIONS
+// ===================================================================
 
 // CreateActionTemplate creates a new action template with parameters
 func (ar *ActionRepository) CreateActionTemplate(action *models.ActionTemplate, parameters []models.ActionParameterTemplateRequest) (*models.ActionTemplate, error) {
 	var result *models.ActionTemplate
 	var err error
 
-	err = ar.db.Transaction(func(tx *gorm.DB) error {
+	err = ar.WithTransaction(func(tx *gorm.DB) error {
 		// Create the action template
-		if err := tx.Create(action).Error; err != nil {
-			return fmt.Errorf("failed to create action template: %w", err)
+		if err := ar.CreateWithTransaction(tx, action); err != nil {
+			return err
 		}
 
-		// Create parameters
-		if err := ar.createActionParameters(tx, action.ID, parameters); err != nil {
+		// Create parameters using utils
+		if err := ar.createActionParametersWithTx(tx, action.ID, parameters); err != nil {
 			return fmt.Errorf("failed to create action parameters: %w", err)
 		}
 
 		// Get the created action with parameters
 		result, err = ar.getActionTemplateWithTx(tx, action.ID)
-		if err != nil {
-			return fmt.Errorf("failed to get created action template: %w", err)
-		}
-
-		return nil
+		return err
 	})
 
-	if err != nil {
-		return nil, err
-	}
-
-	return result, nil
+	return result, err
 }
 
 // GetActionTemplate retrieves an action template by database ID with parameters
@@ -59,109 +59,34 @@ func (ar *ActionRepository) GetActionTemplate(actionID uint) (*models.ActionTemp
 	return ar.getActionTemplateWithTx(ar.db, actionID)
 }
 
-// GetActionTemplateByActionID retrieves an action template by action ID with parameters
+// GetActionTemplateByActionID retrieves an action template by action ID
 func (ar *ActionRepository) GetActionTemplateByActionID(actionID string) (*models.ActionTemplate, error) {
 	var action models.ActionTemplate
 	err := ar.db.Where("action_id = ?", actionID).
 		Preload("Parameters").
 		First(&action).Error
 
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("action template with action ID '%s' not found", actionID)
-		}
-		return nil, fmt.Errorf("failed to get action template: %w", err)
-	}
-
-	return &action, nil
+	return &action, base.HandleDBError("get", "action_templates", fmt.Sprintf("action ID '%s'", actionID), err)
 }
 
 // ListActionTemplates retrieves all action templates with pagination
 func (ar *ActionRepository) ListActionTemplates(limit, offset int) ([]models.ActionTemplate, error) {
-	var actions []models.ActionTemplate
-	query := ar.db.Preload("Parameters").Order("created_at DESC")
-
-	if limit > 0 {
-		query = query.Limit(limit)
-	}
-	if offset > 0 {
-		query = query.Offset(offset)
-	}
-
-	err := query.Find(&actions).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to list action templates: %w", err)
-	}
-
-	return actions, nil
+	return ar.ListWithPagination(limit, offset, "created_at DESC")
 }
 
 // ListActionTemplatesByType retrieves action templates filtered by action type
 func (ar *ActionRepository) ListActionTemplatesByType(actionType string, limit, offset int) ([]models.ActionTemplate, error) {
-	var actions []models.ActionTemplate
-	query := ar.db.Where("action_type = ?", actionType).
-		Preload("Parameters").
-		Order("created_at DESC")
-
-	if limit > 0 {
-		query = query.Limit(limit)
-	}
-	if offset > 0 {
-		query = query.Offset(offset)
-	}
-
-	err := query.Find(&actions).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to list action templates by type: %w", err)
-	}
-
-	return actions, nil
+	return ar.FilterByField("action_type", actionType, limit, offset)
 }
 
-// SearchActionTemplates searches action templates by term in type or description
+// SearchActionTemplates searches action templates by term
 func (ar *ActionRepository) SearchActionTemplates(searchTerm string, limit, offset int) ([]models.ActionTemplate, error) {
-	var actions []models.ActionTemplate
-	searchPattern := "%" + searchTerm + "%"
-
-	query := ar.db.Where("action_type ILIKE ? OR action_description ILIKE ?", searchPattern, searchPattern).
-		Preload("Parameters").
-		Order("created_at DESC")
-
-	if limit > 0 {
-		query = query.Limit(limit)
-	}
-	if offset > 0 {
-		query = query.Offset(offset)
-	}
-
-	err := query.Find(&actions).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to search action templates: %w", err)
-	}
-
-	return actions, nil
+	return ar.SearchByField("action_type", searchTerm, limit, offset)
 }
 
 // GetActionTemplatesByBlockingType retrieves action templates filtered by blocking type
 func (ar *ActionRepository) GetActionTemplatesByBlockingType(blockingType string, limit, offset int) ([]models.ActionTemplate, error) {
-	var actions []models.ActionTemplate
-	query := ar.db.Where("blocking_type = ?", blockingType).
-		Preload("Parameters").
-		Order("created_at DESC")
-
-	if limit > 0 {
-		query = query.Limit(limit)
-	}
-	if offset > 0 {
-		query = query.Offset(offset)
-	}
-
-	err := query.Find(&actions).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to get action templates by blocking type: %w", err)
-	}
-
-	return actions, nil
+	return ar.FilterByField("blocking_type", blockingType, limit, offset)
 }
 
 // UpdateActionTemplate updates an existing action template
@@ -169,26 +94,8 @@ func (ar *ActionRepository) UpdateActionTemplate(actionID uint, action *models.A
 	var result *models.ActionTemplate
 	var err error
 
-	err = ar.db.Transaction(func(tx *gorm.DB) error {
-		// Check if action exists
-		var existingAction models.ActionTemplate
-		if err := tx.Where("id = ?", actionID).First(&existingAction).Error; err != nil {
-			if err == gorm.ErrRecordNotFound {
-				return fmt.Errorf("action template with ID %d not found", actionID)
-			}
-			return fmt.Errorf("failed to check existing action: %w", err)
-		}
-
-		// Check for action_id conflicts (if action_id is changing)
-		if existingAction.ActionID != action.ActionID {
-			var conflictAction models.ActionTemplate
-			err := tx.Where("action_id = ? AND id != ?", action.ActionID, actionID).First(&conflictAction).Error
-			if err == nil {
-				return fmt.Errorf("action with ID '%s' already exists", action.ActionID)
-			}
-		}
-
-		// Update the action template
+	err = ar.WithTransaction(func(tx *gorm.DB) error {
+		// Update the action template using base method
 		updateFields := map[string]interface{}{
 			"action_type":        action.ActionType,
 			"action_id":          action.ActionID,
@@ -196,88 +103,74 @@ func (ar *ActionRepository) UpdateActionTemplate(actionID uint, action *models.A
 			"action_description": action.ActionDescription,
 		}
 
-		if err := tx.Model(&models.ActionTemplate{}).Where("id = ?", actionID).Updates(updateFields).Error; err != nil {
-			return fmt.Errorf("failed to update action template: %w", err)
+		if err := ar.UpdateWithTransaction(tx, actionID, updateFields); err != nil {
+			return err
 		}
 
-		// Delete existing parameters
-		if err := ar.deleteActionParametersWithTx(tx, actionID); err != nil {
-			return fmt.Errorf("failed to delete existing parameters: %w", err)
+		// Delete and recreate parameters
+		if err := tx.Where("action_template_id = ?", actionID).Delete(&models.ActionParameterTemplate{}).Error; err != nil {
+			return base.WrapDBError("delete parameters", "action_parameter_templates", err)
 		}
 
-		// Create new parameters
-		if err := ar.createActionParameters(tx, actionID, parameters); err != nil {
-			return fmt.Errorf("failed to create new parameters: %w", err)
+		if err := ar.createActionParametersWithTx(tx, actionID, parameters); err != nil {
+			return err
 		}
 
-		// Get updated action with parameters
 		result, err = ar.getActionTemplateWithTx(tx, actionID)
-		if err != nil {
-			return fmt.Errorf("failed to get updated action template: %w", err)
-		}
-
-		return nil
+		return err
 	})
 
-	if err != nil {
-		return nil, err
-	}
-
-	return result, nil
+	return result, err
 }
 
 // DeleteActionTemplate deletes an action template and its parameters
 func (ar *ActionRepository) DeleteActionTemplate(actionID uint) error {
-	return ar.db.Transaction(func(tx *gorm.DB) error {
-		// Delete parameters first (foreign key constraint)
-		if err := ar.deleteActionParametersWithTx(tx, actionID); err != nil {
-			return fmt.Errorf("failed to delete action parameters: %w", err)
+	return ar.WithTransaction(func(tx *gorm.DB) error {
+		// Delete parameters first
+		if err := tx.Where("action_template_id = ?", actionID).Delete(&models.ActionParameterTemplate{}).Error; err != nil {
+			return base.WrapDBError("delete parameters", "action_parameter_templates", err)
 		}
 
-		// Delete the action template
-		if err := tx.Delete(&models.ActionTemplate{}, actionID).Error; err != nil {
-			return fmt.Errorf("failed to delete action template: %w", err)
-		}
-
-		return nil
+		// Delete the action template using base method
+		return ar.DeleteWithTransaction(tx, actionID)
 	})
 }
 
-// CreateActionParameter creates a new action parameter for an action template
+// CreateActionParameter creates a new action parameter
 func (ar *ActionRepository) CreateActionParameter(actionTemplateID uint, parameter *models.ActionParameterTemplate) error {
 	parameter.ActionTemplateID = actionTemplateID
 	if err := ar.db.Create(parameter).Error; err != nil {
-		return fmt.Errorf("failed to create action parameter: %w", err)
+		return base.WrapDBError("create", "action_parameter_templates", err)
 	}
 	return nil
 }
 
 // DeleteActionParameters deletes all parameters for an action template
 func (ar *ActionRepository) DeleteActionParameters(actionTemplateID uint) error {
-	return ar.deleteActionParametersWithTx(ar.db, actionTemplateID)
+	if err := ar.db.Where("action_template_id = ?", actionTemplateID).Delete(&models.ActionParameterTemplate{}).Error; err != nil {
+		return base.WrapDBError("delete parameters", "action_parameter_templates", err)
+	}
+	return nil
 }
 
-// Private helper methods
+// ===================================================================
+// PRIVATE HELPER METHODS
+// ===================================================================
 
+// getActionTemplateWithTx retrieves action template with parameters
 func (ar *ActionRepository) getActionTemplateWithTx(tx *gorm.DB, actionID uint) (*models.ActionTemplate, error) {
 	var action models.ActionTemplate
 	err := tx.Where("id = ?", actionID).
 		Preload("Parameters").
 		First(&action).Error
 
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("action template with ID %d not found", actionID)
-		}
-		return nil, fmt.Errorf("failed to get action template: %w", err)
-	}
-
-	return &action, nil
+	return &action, base.HandleDBError("get", "action_templates", fmt.Sprintf("ID %d", actionID), err)
 }
 
-func (ar *ActionRepository) createActionParameters(tx *gorm.DB, actionTemplateID uint, parameters []models.ActionParameterTemplateRequest) error {
+// createActionParametersWithTx creates action parameters within transaction
+func (ar *ActionRepository) createActionParametersWithTx(tx *gorm.DB, actionTemplateID uint, parameters []models.ActionParameterTemplateRequest) error {
 	for _, paramReq := range parameters {
-		// Convert value to string based on type
+		// Use utils helper for value conversion
 		valueStr, err := utils.ConvertValueToString(paramReq.Value, paramReq.ValueType)
 		if err != nil {
 			return fmt.Errorf("failed to convert parameter value: %w", err)
@@ -291,15 +184,8 @@ func (ar *ActionRepository) createActionParameters(tx *gorm.DB, actionTemplateID
 		}
 
 		if err := tx.Create(param).Error; err != nil {
-			return fmt.Errorf("failed to create parameter '%s': %w", paramReq.Key, err)
+			return base.WrapDBError("create parameter", "action_parameter_templates", err)
 		}
-	}
-	return nil
-}
-
-func (ar *ActionRepository) deleteActionParametersWithTx(tx *gorm.DB, actionTemplateID uint) error {
-	if err := tx.Where("action_template_id = ?", actionTemplateID).Delete(&models.ActionParameterTemplate{}).Error; err != nil {
-		return fmt.Errorf("failed to delete action parameters: %w", err)
 	}
 	return nil
 }

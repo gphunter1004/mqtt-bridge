@@ -3,10 +3,10 @@ package services
 import (
 	"context"
 	"fmt"
-	"log"
 
 	"mqtt-bridge/message"
 	"mqtt-bridge/transport"
+	"mqtt-bridge/utils"
 )
 
 // MessageService - 메시지 생성과 전송을 통합 관리
@@ -23,138 +23,64 @@ func NewMessageService(generator message.MessageGenerator, transportManager *tra
 }
 
 // =======================================================================
-// ORDER 메시지 전송
+// 통합된 메시지 전송 메소드 (중복 제거)
 // =======================================================================
 
 func (ms *MessageService) SendOrderMessage(ctx context.Context, req *message.OrderMessageRequest, transportType transport.TransportType) error {
-	// 1. 메시지 body 생성
-	payload, err := ms.generator.GenerateOrderMessage(req)
-	if err != nil {
-		return fmt.Errorf("failed to generate order message: %w", err)
-	}
-
-	// 2. 목적지 결정
-	destination := ms.getDestination(req.SerialNumber, req.Manufacturer, "order", transportType)
-
-	// 3. 전송
-	log.Printf("[Message Service] Sending order %s to robot %s via %s",
-		req.OrderID, req.SerialNumber, transportType)
-
-	return ms.transportManager.Send(ctx, transportType, destination, payload)
+	return ms.sendMessage(ctx, req.SerialNumber, req.Manufacturer, "order", transportType, func() ([]byte, error) {
+		return ms.generator.GenerateOrderMessage(req)
+	})
 }
 
 func (ms *MessageService) SendOrderMessageDefault(ctx context.Context, req *message.OrderMessageRequest) error {
-	payload, err := ms.generator.GenerateOrderMessage(req)
-	if err != nil {
-		return fmt.Errorf("failed to generate order message: %w", err)
-	}
-
-	defaultTransport := ms.transportManager.GetDefaultTransport()
-	destination := ms.getDestination(req.SerialNumber, req.Manufacturer, "order", defaultTransport)
-
-	log.Printf("[Message Service] Sending order %s to robot %s via default transport (%s)",
-		req.OrderID, req.SerialNumber, defaultTransport)
-
-	return ms.transportManager.SendWithDefault(ctx, destination, payload)
+	return ms.SendOrderMessage(ctx, req, ms.transportManager.GetDefaultTransport())
 }
 
-// =======================================================================
-// INSTANT ACTION 메시지 전송
-// =======================================================================
-
 func (ms *MessageService) SendInstantActionMessage(ctx context.Context, req *message.InstantActionMessageRequest, transportType transport.TransportType) error {
-	payload, err := ms.generator.GenerateInstantActionMessage(req)
-	if err != nil {
-		return fmt.Errorf("failed to generate instant action message: %w", err)
-	}
-
-	destination := ms.getDestination(req.SerialNumber, req.Manufacturer, "instantActions", transportType)
-
-	log.Printf("[Message Service] Sending %d instant actions to robot %s via %s",
-		len(req.Actions), req.SerialNumber, transportType)
-
-	return ms.transportManager.Send(ctx, transportType, destination, payload)
+	return ms.sendMessage(ctx, req.SerialNumber, req.Manufacturer, "instantActions", transportType, func() ([]byte, error) {
+		return ms.generator.GenerateInstantActionMessage(req)
+	})
 }
 
 func (ms *MessageService) SendInstantActionMessageDefault(ctx context.Context, req *message.InstantActionMessageRequest) error {
-	payload, err := ms.generator.GenerateInstantActionMessage(req)
-	if err != nil {
-		return fmt.Errorf("failed to generate instant action message: %w", err)
-	}
-
-	defaultTransport := ms.transportManager.GetDefaultTransport()
-	destination := ms.getDestination(req.SerialNumber, req.Manufacturer, "instantActions", defaultTransport)
-
-	log.Printf("[Message Service] Sending %d instant actions to robot %s via default transport (%s)",
-		len(req.Actions), req.SerialNumber, defaultTransport)
-
-	return ms.transportManager.SendWithDefault(ctx, destination, payload)
+	return ms.SendInstantActionMessage(ctx, req, ms.transportManager.GetDefaultTransport())
 }
 
-// =======================================================================
-// FACTSHEET REQUEST 메시지 전송
-// =======================================================================
-
 func (ms *MessageService) SendFactsheetRequest(ctx context.Context, req *message.FactsheetRequestMessageRequest, transportType transport.TransportType) error {
-	payload, err := ms.generator.GenerateFactsheetRequestMessage(req)
-	if err != nil {
-		return fmt.Errorf("failed to generate factsheet request: %w", err)
-	}
-
-	destination := ms.getDestination(req.SerialNumber, req.Manufacturer, "instantActions", transportType)
-
-	log.Printf("[Message Service] Sending factsheet request to robot %s via %s",
-		req.SerialNumber, transportType)
-
-	return ms.transportManager.Send(ctx, transportType, destination, payload)
+	return ms.sendMessage(ctx, req.SerialNumber, req.Manufacturer, "instantActions", transportType, func() ([]byte, error) {
+		return ms.generator.GenerateFactsheetRequestMessage(req)
+	})
 }
 
 func (ms *MessageService) SendFactsheetRequestDefault(ctx context.Context, req *message.FactsheetRequestMessageRequest) error {
-	payload, err := ms.generator.GenerateFactsheetRequestMessage(req)
-	if err != nil {
-		return fmt.Errorf("failed to generate factsheet request: %w", err)
-	}
-
-	defaultTransport := ms.transportManager.GetDefaultTransport()
-	destination := ms.getDestination(req.SerialNumber, req.Manufacturer, "instantActions", defaultTransport)
-
-	log.Printf("[Message Service] Sending factsheet request to robot %s via default transport (%s)",
-		req.SerialNumber, defaultTransport)
-
-	return ms.transportManager.SendWithDefault(ctx, destination, payload)
+	return ms.SendFactsheetRequest(ctx, req, ms.transportManager.GetDefaultTransport())
 }
 
-// =======================================================================
-// INIT POSITION 메시지 전송
-// =======================================================================
-
 func (ms *MessageService) SendInitPositionMessage(ctx context.Context, req *message.InitPositionMessageRequest, transportType transport.TransportType) error {
-	payload, err := ms.generator.GenerateInitPositionMessage(req)
-	if err != nil {
-		return fmt.Errorf("failed to generate init position message: %w", err)
-	}
-
-	destination := ms.getDestination(req.SerialNumber, req.Manufacturer, "instantActions", transportType)
-
-	log.Printf("[Message Service] Sending init position command to robot %s via %s",
-		req.SerialNumber, transportType)
-
-	return ms.transportManager.Send(ctx, transportType, destination, payload)
+	return ms.sendMessage(ctx, req.SerialNumber, req.Manufacturer, "instantActions", transportType, func() ([]byte, error) {
+		return ms.generator.GenerateInitPositionMessage(req)
+	})
 }
 
 func (ms *MessageService) SendInitPositionMessageDefault(ctx context.Context, req *message.InitPositionMessageRequest) error {
-	payload, err := ms.generator.GenerateInitPositionMessage(req)
+	return ms.SendInitPositionMessage(ctx, req, ms.transportManager.GetDefaultTransport())
+}
+
+// =======================================================================
+// 통합된 공통 전송 로직 (중복 제거)
+// =======================================================================
+
+// sendMessage - 모든 메시지 전송의 공통 패턴을 통합
+func (ms *MessageService) sendMessage(ctx context.Context, serialNumber, manufacturer, messageType string, transportType transport.TransportType, generator func() ([]byte, error)) error {
+	payload, err := generator()
 	if err != nil {
-		return fmt.Errorf("failed to generate init position message: %w", err)
+		return err
 	}
 
-	defaultTransport := ms.transportManager.GetDefaultTransport()
-	destination := ms.getDestination(req.SerialNumber, req.Manufacturer, "instantActions", defaultTransport)
+	destination := ms.getDestination(serialNumber, manufacturer, messageType, transportType)
+	utils.LogInfo(utils.LogComponentTransport, "Sending %s to robot %s via %s", messageType, serialNumber, transportType)
 
-	log.Printf("[Message Service] Sending init position command to robot %s via default transport (%s)",
-		req.SerialNumber, defaultTransport)
-
-	return ms.transportManager.SendWithDefault(ctx, destination, payload)
+	return ms.transportManager.Send(ctx, transportType, destination, payload)
 }
 
 // =======================================================================
@@ -166,13 +92,10 @@ func (ms *MessageService) getDestination(serialNumber, manufacturer, messageType
 	case transport.TransportTypeMQTT:
 		return fmt.Sprintf("meili/v2/%s/%s/%s", manufacturer, serialNumber, messageType)
 	case transport.TransportTypeHTTP:
-		// HTTP의 경우 로봇의 REST API 엔드포인트
-		// 실제 환경에서는 설정으로 관리해야 함
 		return fmt.Sprintf("http://%s.robot.local:8080/api/v1/%s", serialNumber, messageType)
 	case transport.TransportTypeWebSocket:
 		return fmt.Sprintf("ws://%s.robot.local:8080/ws/%s", serialNumber, messageType)
 	default:
-		// 기본값은 MQTT 형식
 		return fmt.Sprintf("meili/v2/%s/%s/%s", manufacturer, serialNumber, messageType)
 	}
 }
@@ -189,7 +112,6 @@ func (ms *MessageService) GetDefaultTransport() transport.TransportType {
 	return ms.transportManager.GetDefaultTransport()
 }
 
-// Transport 설정 메소드들
 func (ms *MessageService) RegisterTransport(transportType transport.TransportType, transport transport.MessageTransport) {
 	ms.transportManager.RegisterTransport(transportType, transport)
 }

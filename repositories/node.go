@@ -4,66 +4,61 @@ import (
 	"fmt"
 
 	"mqtt-bridge/models"
+	"mqtt-bridge/repositories/base"
 	"mqtt-bridge/repositories/interfaces"
+	"mqtt-bridge/utils"
 
 	"gorm.io/gorm"
 )
 
-// NodeRepository implements NodeRepositoryInterface
+// NodeRepository implements NodeRepositoryInterface using base CRUD
 type NodeRepository struct {
+	*base.BaseCRUDRepository[models.NodeTemplate]
 	db *gorm.DB
 }
 
 // NewNodeRepository creates a new instance of NodeRepository
 func NewNodeRepository(db *gorm.DB) interfaces.NodeRepositoryInterface {
+	baseCRUD := base.NewBaseCRUDRepository[models.NodeTemplate](db, "node_templates")
 	return &NodeRepository{
-		db: db,
+		BaseCRUDRepository: baseCRUD,
+		db:                 db,
 	}
 }
 
+// ===================================================================
+// NODE TEMPLATE CRUD OPERATIONS
+// ===================================================================
+
 // CreateNode creates a new node template
 func (nr *NodeRepository) CreateNode(node *models.NodeTemplate) (*models.NodeTemplate, error) {
-	if err := nr.db.Create(node).Error; err != nil {
-		return nil, fmt.Errorf("failed to create node template: %w", err)
+	// Use base method for uniqueness check
+	if err := nr.CheckUniqueConstraint(&nodeEntity{node.NodeID}); err != nil {
+		return nil, err
 	}
-	return nr.GetNode(node.ID)
+
+	return nr.CreateAndGet(node)
 }
 
 // GetNode retrieves a node template by database ID
 func (nr *NodeRepository) GetNode(nodeID uint) (*models.NodeTemplate, error) {
-	var node models.NodeTemplate
-	err := nr.db.Where("id = ?", nodeID).First(&node).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("node template with ID %d not found", nodeID)
-		}
-		return nil, fmt.Errorf("failed to get node template: %w", err)
-	}
-	return &node, nil
+	return nr.GetByID(nodeID)
 }
 
 // GetNodeByNodeID retrieves a node template by node ID
 func (nr *NodeRepository) GetNodeByNodeID(nodeID string) (*models.NodeTemplate, error) {
 	var node models.NodeTemplate
 	err := nr.db.Where("node_id = ?", nodeID).First(&node).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("node template with node ID '%s' not found", nodeID)
-		}
-		return nil, fmt.Errorf("failed to get node template: %w", err)
-	}
-	return &node, nil
+	return &node, base.HandleDBError("get", "node_templates", fmt.Sprintf("node ID '%s'", nodeID), err)
 }
 
 // GetNodeWithActions retrieves a node template with its associated action templates
 func (nr *NodeRepository) GetNodeWithActions(nodeID uint) (*models.NodeTemplate, []models.ActionTemplate, error) {
-	// Get the node template
 	node, err := nr.GetNode(nodeID)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Get associated action templates
 	actions, err := nr.GetActionTemplatesByNodeID(nodeID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get action templates for node: %w", err)
@@ -74,43 +69,19 @@ func (nr *NodeRepository) GetNodeWithActions(nodeID uint) (*models.NodeTemplate,
 
 // ListNodes retrieves all node templates with pagination
 func (nr *NodeRepository) ListNodes(limit, offset int) ([]models.NodeTemplate, error) {
-	var nodes []models.NodeTemplate
-	query := nr.db.Order("created_at DESC")
-
-	if limit > 0 {
-		query = query.Limit(limit)
-	}
-	if offset > 0 {
-		query = query.Offset(offset)
-	}
-
-	err := query.Find(&nodes).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to list node templates: %w", err)
-	}
-
-	return nodes, nil
+	return nr.ListWithPagination(limit, offset, "created_at DESC")
 }
 
 // UpdateNode updates an existing node template
 func (nr *NodeRepository) UpdateNode(nodeID uint, node *models.NodeTemplate) (*models.NodeTemplate, error) {
-	// Check if node exists
-	if _, err := nr.GetNode(nodeID); err != nil {
-		return nil, fmt.Errorf("node template not found: %w", err)
-	}
-
-	// Check for nodeID conflicts (if nodeID is changing)
+	// Check uniqueness using base method
 	if node.NodeID != "" {
-		exists, err := nr.CheckNodeExistsExcluding(node.NodeID, nodeID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to check node ID conflict: %w", err)
-		}
-		if exists {
-			return nil, fmt.Errorf("node with ID '%s' already exists", node.NodeID)
+		if err := nr.CheckUniqueConstraint(&nodeEntity{node.NodeID}, nodeID); err != nil {
+			return nil, err
 		}
 	}
 
-	// Update the node template
+	// Use base update method
 	updateFields := map[string]interface{}{
 		"node_id":                 node.NodeID,
 		"name":                    node.Name,
@@ -126,59 +97,47 @@ func (nr *NodeRepository) UpdateNode(nodeID uint, node *models.NodeTemplate) (*m
 		"action_template_ids":     node.ActionTemplateIDs,
 	}
 
-	if err := nr.db.Model(&models.NodeTemplate{}).Where("id = ?", nodeID).Updates(updateFields).Error; err != nil {
-		return nil, fmt.Errorf("failed to update node template: %w", err)
-	}
-
-	return nr.GetNode(nodeID)
+	return nr.UpdateAndGet(nodeID, updateFields)
 }
 
 // DeleteNode deletes a node template and cleans up associations
 func (nr *NodeRepository) DeleteNode(nodeID uint) error {
-	return nr.db.Transaction(func(tx *gorm.DB) error {
-		// Remove order template associations first
+	return nr.WithTransaction(func(tx *gorm.DB) error {
+		// Remove order template associations
 		if err := tx.Where("node_template_id = ?", nodeID).Delete(&models.OrderTemplateNode{}).Error; err != nil {
-			return fmt.Errorf("failed to delete order template associations: %w", err)
+			return base.WrapDBError("delete order template associations", "order_template_nodes", err)
 		}
 
-		// Get the node to access action template IDs
+		// Get node for action template cleanup
 		node, err := nr.GetNode(nodeID)
 		if err != nil {
-			return fmt.Errorf("failed to get node for deletion: %w", err)
+			return err
 		}
 
-		// Delete associated action templates if any
+		// Delete associated action templates using utils helper
 		if node.ActionTemplateIDs != "" {
-			actionIDs, err := node.GetActionTemplateIDs()
+			actionIDs, err := utils.ParseJSONToUintSlice(node.ActionTemplateIDs)
 			if err == nil && len(actionIDs) > 0 {
 				// Delete action parameters first
 				if err := tx.Where("action_template_id IN ?", actionIDs).Delete(&models.ActionParameterTemplate{}).Error; err != nil {
-					return fmt.Errorf("failed to delete action parameters: %w", err)
+					return base.WrapDBError("delete action parameters", "action_parameter_templates", err)
 				}
 				// Delete action templates
 				if err := tx.Where("id IN ?", actionIDs).Delete(&models.ActionTemplate{}).Error; err != nil {
-					return fmt.Errorf("failed to delete action templates: %w", err)
+					return base.WrapDBError("delete action templates", "action_templates", err)
 				}
 			}
 		}
 
-		// Delete the node template
-		if err := tx.Delete(&models.NodeTemplate{}, nodeID).Error; err != nil {
-			return fmt.Errorf("failed to delete node template: %w", err)
-		}
-
-		return nil
+		// Delete the node template using base method
+		return nr.DeleteWithTransaction(tx, nodeID)
 	})
 }
 
 // CheckNodeExists checks if a node with the given nodeID already exists
 func (nr *NodeRepository) CheckNodeExists(nodeID string) (bool, error) {
-	var count int64
-	err := nr.db.Model(&models.NodeTemplate{}).Where("node_id = ?", nodeID).Count(&count).Error
-	if err != nil {
-		return false, fmt.Errorf("failed to check node existence: %w", err)
-	}
-	return count > 0, nil
+	count, err := nr.CountByField("node_id", nodeID)
+	return count > 0, err
 }
 
 // CheckNodeExistsExcluding checks if a node exists excluding a specific database ID
@@ -187,22 +146,18 @@ func (nr *NodeRepository) CheckNodeExistsExcluding(nodeID string, excludeID uint
 	err := nr.db.Model(&models.NodeTemplate{}).
 		Where("node_id = ? AND id != ?", nodeID, excludeID).
 		Count(&count).Error
-	if err != nil {
-		return false, fmt.Errorf("failed to check node existence excluding ID: %w", err)
-	}
-	return count > 0, nil
+	return count > 0, base.WrapDBError("check node existence", "node_templates", err)
 }
 
 // GetActionTemplatesByNodeID retrieves action templates associated with a node
 func (nr *NodeRepository) GetActionTemplatesByNodeID(nodeID uint) ([]models.ActionTemplate, error) {
-	// Get the node to access action template IDs
 	node, err := nr.GetNode(nodeID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse action template IDs from JSON
-	actionIDs, err := node.GetActionTemplateIDs()
+	// Use utils helper for JSON parsing
+	actionIDs, err := utils.ParseJSONToUintSlice(node.ActionTemplateIDs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse action template IDs: %w", err)
 	}
@@ -211,14 +166,27 @@ func (nr *NodeRepository) GetActionTemplatesByNodeID(nodeID uint) ([]models.Acti
 		return []models.ActionTemplate{}, nil
 	}
 
-	// Get action templates
 	var actions []models.ActionTemplate
 	err = nr.db.Where("id IN ?", actionIDs).
 		Preload("Parameters").
 		Find(&actions).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to get action templates: %w", err)
-	}
 
-	return actions, nil
+	return actions, base.WrapDBError("get action templates", "action_templates", err)
+}
+
+// ===================================================================
+// HELPER ENTITY FOR BASE INTERFACE COMPLIANCE
+// ===================================================================
+
+// nodeEntity implements NamedEntity interface for uniqueness checking
+type nodeEntity struct {
+	nodeID string
+}
+
+func (n *nodeEntity) GetIdentifier() string {
+	return n.nodeID
+}
+
+func (n *nodeEntity) GetIdentifierField() string {
+	return "node_id"
 }

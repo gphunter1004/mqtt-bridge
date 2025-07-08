@@ -3,13 +3,13 @@ package services
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"mqtt-bridge/message"
 	"mqtt-bridge/models"
 	"mqtt-bridge/redis"
 	"mqtt-bridge/repositories/interfaces"
+	"mqtt-bridge/services/base"
 	"mqtt-bridge/transport"
 	"mqtt-bridge/utils"
 )
@@ -21,8 +21,9 @@ type BridgeService struct {
 	orderExecutionRepo interfaces.OrderExecutionRepositoryInterface
 
 	// Other dependencies
-	redis          *redis.RedisClient
-	messageService *MessageService
+	redis               *redis.RedisClient
+	messageService      *MessageService
+	manufacturerManager *base.ManufacturerManager
 }
 
 func NewBridgeService(
@@ -33,11 +34,12 @@ func NewBridgeService(
 	messageService *MessageService,
 ) *BridgeService {
 	return &BridgeService{
-		connectionRepo:     connectionRepo,
-		factsheetRepo:      factsheetRepo,
-		orderExecutionRepo: orderExecutionRepo,
-		redis:              redisClient,
-		messageService:     messageService,
+		connectionRepo:      connectionRepo,
+		factsheetRepo:       factsheetRepo,
+		orderExecutionRepo:  orderExecutionRepo,
+		redis:               redisClient,
+		messageService:      messageService,
+		manufacturerManager: base.NewManufacturerManager(connectionRepo),
 	}
 }
 
@@ -58,12 +60,7 @@ func (bs *BridgeService) GetRobotCapabilities(serialNumber string) (*models.Robo
 }
 
 func (bs *BridgeService) GetRobotManufacturer(serialNumber string) string {
-	manufacturer, err := bs.connectionRepo.GetRobotManufacturer(serialNumber)
-	if err != nil {
-		log.Printf("[Bridge Service] Failed to get manufacturer for robot %s: %v", serialNumber, err)
-		return "Roboligent" // Default fallback
-	}
-	return manufacturer
+	return bs.manufacturerManager.GetRobotManufacturer(serialNumber)
 }
 
 func (bs *BridgeService) GetConnectedRobots() ([]string, error) {
@@ -148,7 +145,7 @@ func (bs *BridgeService) sendOrderWithTransport(serialNumber string, orderData m
 		return fmt.Errorf("failed to send order via %s: %w", transportType, err)
 	}
 
-	log.Printf("Order %s sent successfully to robot %s via %s", orderData.OrderID, serialNumber, transportType)
+	utils.LogInfo(utils.LogComponentService, "Order %s sent successfully to robot %s via %s", orderData.OrderID, serialNumber, transportType)
 	return nil
 }
 
@@ -187,7 +184,7 @@ func (bs *BridgeService) sendCustomActionWithTransport(serialNumber string, acti
 		return fmt.Errorf("failed to send custom action via %s: %w", transportType, err)
 	}
 
-	log.Printf("Custom action sent successfully to robot %s via %s", serialNumber, transportType)
+	utils.LogInfo(utils.LogComponentService, "Custom action sent successfully to robot %s via %s", serialNumber, transportType)
 	return nil
 }
 
@@ -284,7 +281,7 @@ func (bs *BridgeService) createEnhancedOrder(serialNumber, orderType string, par
 	nodeID := utils.GenerateNodeID()
 	actionID := utils.GenerateActionID()
 
-	// Get or create default values
+	// Get or create default values using utils helpers
 	position := bs.getPositionFromParams(params)
 	actionType := bs.getActionTypeFromParams(orderType, params)
 	actionDescription := bs.getActionDescriptionFromParams(orderType, params)
@@ -292,7 +289,7 @@ func (bs *BridgeService) createEnhancedOrder(serialNumber, orderType string, par
 	description := utils.GetValueOrDefault(bs.getStringFromParams(params, "description"),
 		fmt.Sprintf("%s Task", utils.GetValueOrDefault(orderType, "Unknown")))
 
-	// Build action parameters
+	// Build action parameters using utils helpers
 	actionParams := bs.buildActionParameters(orderType, params)
 
 	// Get additional parameters
@@ -355,7 +352,7 @@ func (bs *BridgeService) createDynamicOrder(req *DynamicOrderRequest, transportT
 		return fmt.Errorf("failed to create order execution record: %w", err)
 	}
 
-	// Process nodes and edges with IDs
+	// Process nodes and edges with IDs using utils helpers
 	nodes := utils.ProcessNodesWithIDs(req.Nodes)
 	edges := utils.ProcessEdgesWithIDs(req.Edges)
 
@@ -377,7 +374,7 @@ func (bs *BridgeService) createDynamicOrder(req *DynamicOrderRequest, transportT
 	}
 
 	bs.updateOrderStatus(orderID, "SENT", "")
-	log.Printf("Dynamic order %s with %d nodes and %d edges sent to robot %s via %s",
+	utils.LogInfo(utils.LogComponentService, "Dynamic order %s with %d nodes and %d edges sent to robot %s via %s",
 		orderID, len(nodes), len(edges), req.SerialNumber, transportType)
 
 	return nil
@@ -398,7 +395,7 @@ func (bs *BridgeService) GetDefaultTransport() transport.TransportType {
 func (bs *BridgeService) SetDefaultTransport(transportType transport.TransportType) error {
 	availableTransports := bs.GetAvailableTransports()
 
-	// 사용 가능한 Transport인지 확인
+	// Check if transport is available
 	found := false
 	for _, t := range availableTransports {
 		if t == transportType {
@@ -412,7 +409,7 @@ func (bs *BridgeService) SetDefaultTransport(transportType transport.TransportTy
 	}
 
 	bs.messageService.SetDefaultTransport(transportType)
-	log.Printf("[Bridge Service] Default transport changed to: %s", transportType)
+	utils.LogInfo(utils.LogComponentBridge, "Default transport changed to: %s", transportType)
 	return nil
 }
 
@@ -481,7 +478,7 @@ func (bs *BridgeService) buildActionParameters(orderType string, params map[stri
 		}
 	}
 
-	// Add custom parameters
+	// Add custom parameters using utils helper
 	if customParams, ok := params["customParameters"].(map[string]interface{}); ok {
 		actionParams = utils.AddCustomParameters(actionParams, customParams)
 	}
@@ -520,11 +517,11 @@ func (bs *BridgeService) getEdgesFromParams(params map[string]interface{}) []mod
 func (bs *BridgeService) updateOrderStatus(orderID, status, errorMessage string) {
 	err := bs.orderExecutionRepo.UpdateOrderStatus(orderID, status, errorMessage)
 	if err != nil {
-		log.Printf("Failed to update order status: %v", err)
+		utils.LogError(utils.LogComponentService, "Failed to update order status: %v", err)
 		return
 	}
 
-	log.Printf("Order %s status updated to %s", orderID, status)
+	utils.LogInfo(utils.LogComponentService, "Order %s status updated to %s", orderID, status)
 }
 
 // ===================================================================
