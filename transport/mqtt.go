@@ -3,7 +3,7 @@ package transport
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -13,16 +13,17 @@ import (
 type MQTTTransport struct {
 	client  mqtt.Client
 	qos     byte
-	timeout time.Duration // Added timeout field
+	timeout time.Duration
+	logger  *slog.Logger
 }
 
 // NewMQTTTransport creates a new instance of MQTTTransport.
-// The publish timeout is now configurable.
-func NewMQTTTransport(client mqtt.Client, timeout time.Duration) *MQTTTransport {
+func NewMQTTTransport(client mqtt.Client, timeout time.Duration, logger *slog.Logger) *MQTTTransport {
 	return &MQTTTransport{
 		client:  client,
-		qos:     1, // Default to QoS 1 (at least once delivery)
+		qos:     1, // Default to QoS 1
 		timeout: timeout,
+		logger:  logger.With("transport_type", "mqtt"),
 	}
 }
 
@@ -32,25 +33,30 @@ func (mt *MQTTTransport) Send(ctx context.Context, topic string, payload []byte)
 		return fmt.Errorf("MQTT client is not connected")
 	}
 
-	log.Printf("[MQTT Transport] Publishing to topic: %s", topic)
-	log.Printf("[MQTT Transport] Payload size: %d bytes", len(payload))
+	logger := mt.logger.With("topic", topic)
+	logger.Debug("Publishing message", "payload_size", len(payload), "qos", mt.qos)
 
 	token := mt.client.Publish(topic, mt.qos, false, payload)
 
 	// Use a select statement to handle context cancellation and timeout.
 	select {
 	case <-ctx.Done():
-		return fmt.Errorf("MQTT publish cancelled by context: %w", ctx.Err())
+		err := fmt.Errorf("MQTT publish cancelled by context: %w", ctx.Err())
+		logger.Error("Publish context cancelled", slog.Any("error", err))
+		return err
 	case <-time.After(mt.timeout):
-		return fmt.Errorf("MQTT publish timed out after %v", mt.timeout)
+		err := fmt.Errorf("MQTT publish timed out after %v", mt.timeout)
+		logger.Error("Publish timed out", slog.Any("error", err))
+		return err
 	default:
 		// token.Wait() blocks until the message is sent.
 		if token.Wait() && token.Error() != nil {
+			logger.Error("MQTT publish failed", slog.Any("error", token.Error()))
 			return fmt.Errorf("MQTT publish failed: %w", token.Error())
 		}
 	}
 
-	log.Printf("[MQTT Transport] Message published successfully to: %s", topic)
+	logger.Info("Message published successfully")
 	return nil
 }
 
@@ -62,16 +68,15 @@ func (mt *MQTTTransport) GetTransportType() TransportType {
 // Close disconnects the MQTT client.
 func (mt *MQTTTransport) Close() error {
 	// The MQTT client's lifecycle is managed in the main package,
-	// so this method doesn't need to do anything.
-	// It's here to satisfy the interface.
+	// so this method doesn't need to do anything. It's here to satisfy the interface.
 	return nil
 }
 
 // SetQoS allows changing the Quality of Service for subsequent messages.
 func (mt *MQTTTransport) SetQoS(qos byte) {
 	if qos > 2 {
-		qos = 2 // QoS can only be 0, 1, or 2.
+		qos = 2
 	}
 	mt.qos = qos
-	log.Printf("[MQTT Transport] QoS set to: %d", qos)
+	mt.logger.Debug("QoS set", "new_qos", qos)
 }

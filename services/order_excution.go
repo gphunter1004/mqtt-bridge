@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"log/slog"
 	"time"
 
 	"mqtt-bridge/database"
@@ -12,7 +13,7 @@ import (
 	"mqtt-bridge/utils"
 )
 
-// OrderExecutionService handles the business logic for executing and managing orders.
+// OrderExecutionService handles the logic for executing and managing orders.
 type OrderExecutionService struct {
 	orderExecutionRepo interfaces.OrderExecutionRepositoryInterface
 	orderTemplateRepo  interfaces.OrderTemplateRepositoryInterface
@@ -21,9 +22,10 @@ type OrderExecutionService struct {
 	redis              *redis.RedisClient
 	mqttClient         *mqtt.Client
 	uow                database.UnitOfWorkInterface
+	logger             *slog.Logger
 }
 
-// NewOrderExecutionService creates a new instance of OrderExecutionService with all its dependencies.
+// NewOrderExecutionService creates a new instance of OrderExecutionService.
 func NewOrderExecutionService(
 	orderExecutionRepo interfaces.OrderExecutionRepositoryInterface,
 	orderTemplateRepo interfaces.OrderTemplateRepositoryInterface,
@@ -32,6 +34,7 @@ func NewOrderExecutionService(
 	redisClient *redis.RedisClient,
 	mqttClient *mqtt.Client,
 	uow database.UnitOfWorkInterface,
+	logger *slog.Logger,
 ) *OrderExecutionService {
 	return &OrderExecutionService{
 		orderExecutionRepo: orderExecutionRepo,
@@ -41,19 +44,20 @@ func NewOrderExecutionService(
 		redis:              redisClient,
 		mqttClient:         mqttClient,
 		uow:                uow,
+		logger:             logger.With("service", "order_execution_service"),
 	}
 }
 
-// GetRobotManufacturer retrieves the manufacturer for a given robot, providing a default if not found.
+// GetRobotManufacturer retrieves the manufacturer for a given robot.
 func (oes *OrderExecutionService) GetRobotManufacturer(serialNumber string) string {
 	manufacturer, err := oes.connectionRepo.GetRobotManufacturer(serialNumber)
 	if err != nil {
-		return "Roboligent" // Default fallback
+		return "Roboligent"
 	}
 	return manufacturer
 }
 
-// ExecuteOrder validates conditions and executes an order based on a template within a single transaction.
+// ExecuteOrder validates conditions and executes an order based on a template.
 func (oes *OrderExecutionService) ExecuteOrder(req *models.ExecuteOrderRequest) (*models.OrderExecutionResponse, error) {
 	template, nodes, edges, err := oes.orderTemplateRepo.GetOrderTemplateWithDetails(req.TemplateID)
 	if err != nil {
@@ -109,6 +113,7 @@ func (oes *OrderExecutionService) ExecuteOrder(req *models.ExecuteOrderRequest) 
 		return nil, utils.NewInternalServerError("Failed to commit order execution transaction.", err)
 	}
 
+	oes.logger.Info("Order executed successfully", "orderId", orderID, "templateId", req.TemplateID, "serialNumber", req.SerialNumber)
 	return &models.OrderExecutionResponse{
 		OrderID:         orderID,
 		Status:          "SENT",
@@ -118,14 +123,12 @@ func (oes *OrderExecutionService) ExecuteOrder(req *models.ExecuteOrderRequest) 
 	}, nil
 }
 
-// convertTemplateToOrderMessage builds an MQTT-compatible OrderMessage from database templates.
 func (oes *OrderExecutionService) convertTemplateToOrderMessage(
 	nodes []models.NodeTemplate,
 	edges []models.EdgeTemplate,
 	orderID, serialNumber string,
 	paramOverrides map[string]interface{},
 ) (*models.OrderMessage, error) {
-
 	orderNodes := make([]models.Node, len(nodes))
 	for i, nodeTmpl := range nodes {
 		node := nodeTmpl.ToNode()
@@ -163,7 +166,6 @@ func (oes *OrderExecutionService) convertTemplateToOrderMessage(
 	return orderMsg, nil
 }
 
-// fetchAndConvertActions retrieves action templates from DB and converts them to MQTT Action structs.
 func (oes *OrderExecutionService) fetchAndConvertActions(ids []uint, overrides map[string]interface{}) ([]models.Action, error) {
 	actions := make([]models.Action, 0, len(ids))
 	for _, actionID := range ids {
@@ -180,7 +182,6 @@ func (oes *OrderExecutionService) fetchAndConvertActions(ids []uint, overrides m
 	return actions, nil
 }
 
-// applyParameterOverrides modifies action parameters based on runtime overrides.
 func (oes *OrderExecutionService) applyParameterOverrides(action *models.Action, overrides map[string]interface{}) {
 	for i, param := range action.ActionParameters {
 		if overrideValue, exists := overrides[param.Key]; exists {
@@ -189,12 +190,10 @@ func (oes *OrderExecutionService) applyParameterOverrides(action *models.Action,
 	}
 }
 
-// generateUniqueOrderID creates a unique ID for the order.
 func (oes *OrderExecutionService) generateUniqueOrderID() string {
 	return fmt.Sprintf("order_%x", time.Now().UnixNano())
 }
 
-// GetOrderExecution retrieves a single order execution by its string ID.
 func (oes *OrderExecutionService) GetOrderExecution(orderID string) (*models.OrderExecution, error) {
 	execution, err := oes.orderExecutionRepo.GetOrderExecution(orderID)
 	if err != nil {
@@ -203,7 +202,6 @@ func (oes *OrderExecutionService) GetOrderExecution(orderID string) (*models.Ord
 	return execution, nil
 }
 
-// ListOrderExecutions retrieves a paginated list of order executions.
 func (oes *OrderExecutionService) ListOrderExecutions(serialNumber string, limit, offset int) ([]models.OrderExecution, error) {
 	executions, err := oes.orderExecutionRepo.ListOrderExecutions(serialNumber, limit, offset)
 	if err != nil {
@@ -212,7 +210,6 @@ func (oes *OrderExecutionService) ListOrderExecutions(serialNumber string, limit
 	return executions, nil
 }
 
-// CancelOrder cancels an active order within a transaction.
 func (oes *OrderExecutionService) CancelOrder(orderID string) error {
 	execution, err := oes.orderExecutionRepo.GetOrderExecution(orderID)
 	if err != nil {
@@ -228,10 +225,10 @@ func (oes *OrderExecutionService) CancelOrder(orderID string) error {
 		oes.uow.Rollback(tx)
 		return utils.NewInternalServerError("Failed to cancel order.", err)
 	}
+	oes.logger.Info("Order cancelled", "orderId", orderID)
 	return oes.uow.Commit(tx)
 }
 
-// UpdateOrderStatus updates the status of an order.
 func (oes *OrderExecutionService) UpdateOrderStatus(orderID, status string, errorMessage ...string) error {
 	var errMsg string
 	if len(errorMessage) > 0 {
@@ -245,7 +242,6 @@ func (oes *OrderExecutionService) UpdateOrderStatus(orderID, status string, erro
 	return oes.uow.Commit(tx)
 }
 
-// ExecuteDirectOrder sends an order defined directly in the request body.
 func (oes *OrderExecutionService) ExecuteDirectOrder(serialNumber string, orderData *models.OrderMessage) (*models.OrderExecutionResponse, error) {
 	connectionStatus, err := oes.redis.GetConnectionStatus(serialNumber)
 	if err != nil || connectionStatus != "ONLINE" {
@@ -289,6 +285,7 @@ func (oes *OrderExecutionService) ExecuteDirectOrder(serialNumber string, orderD
 		return nil, utils.NewInternalServerError("Failed to commit direct order transaction.", err)
 	}
 
+	oes.logger.Info("Direct order executed successfully", "orderId", orderData.OrderID, "serialNumber", serialNumber)
 	return &models.OrderExecutionResponse{
 		OrderID:      orderData.OrderID,
 		Status:       "SENT",

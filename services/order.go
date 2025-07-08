@@ -1,6 +1,7 @@
 package services
 
 import (
+	"log/slog"
 	"mqtt-bridge/database"
 	"mqtt-bridge/models"
 	"mqtt-bridge/mqtt"
@@ -14,18 +15,20 @@ type OrderService struct {
 }
 
 // NewOrderService creates a new instance of OrderService, initializing all its dependencies.
-func NewOrderService(db *database.Database, redisClient *redis.RedisClient, mqttClient *mqtt.Client) *OrderService {
-	// Create the UnitOfWork instance
-	uow := database.NewUnitOfWork(db.DB)
-
-	// Create underlying services with their proper repository dependencies.
+func NewOrderService(
+	db *database.Database,
+	redisClient *redis.RedisClient,
+	mqttClient *mqtt.Client,
+	logger *slog.Logger,
+) *OrderService {
+	// Create the underlying services with their proper repository dependencies and UnitOfWork.
 	templateService := NewOrderTemplateService(
 		db.OrderTemplateRepo,
 		db.ActionRepo,
-		uow, // Pass UnitOfWork
+		db.UoW,
+		logger,
 	)
 
-	// Correctly pass all dependencies to the OrderExecutionService constructor.
 	executionService := NewOrderExecutionService(
 		db.OrderExecutionRepo,
 		db.OrderTemplateRepo,
@@ -33,7 +36,8 @@ func NewOrderService(db *database.Database, redisClient *redis.RedisClient, mqtt
 		db.ActionRepo,
 		redisClient,
 		mqttClient,
-		uow, // Pass UnitOfWork
+		db.UoW,
+		logger,
 	)
 
 	return &OrderService{
@@ -96,4 +100,12 @@ func (os *OrderService) ListOrderExecutions(serialNumber string, limit, offset i
 
 func (os *OrderService) CancelOrder(orderID string) error {
 	return os.ExecutionService.CancelOrder(orderID)
+}
+
+func (os *OrderService) UpdateOrderStatus(orderID, status string, errorMessage ...string) error {
+	return os.ExecutionService.UpdateOrderStatus(orderID, status, errorMessage...)
+}
+
+func (os *OrderService) ExecuteDirectOrder(serialNumber string, orderData *models.OrderMessage) (*models.OrderExecutionResponse, error) {
+	return os.ExecutionService.ExecuteDirectOrder(serialNumber, orderData)
 }

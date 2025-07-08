@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,6 +12,7 @@ import (
 	"mqtt-bridge/config"
 	"mqtt-bridge/database"
 	"mqtt-bridge/handlers"
+	"mqtt-bridge/logging"
 	"mqtt-bridge/message"
 	"mqtt-bridge/mqtt"
 	"mqtt-bridge/redis"
@@ -23,95 +24,103 @@ import (
 )
 
 func main() {
-	log.Println("🚀 Starting MQTT Bridge Server...")
-
 	cfg := config.LoadConfig()
-	log.Printf("✅ Configuration loaded (App Version: %s)", cfg.Version)
+	logger := logging.NewLogger(cfg.LogLevel)
+	slog.SetDefault(logger)
 
-	db, err := database.NewDatabase(cfg)
+	logger.Info("Starting MQTT Bridge Server...", "version", cfg.Version, "log_level", cfg.LogLevel)
+
+	db, err := database.NewDatabase(cfg, logger)
 	if err != nil {
-		log.Fatalf("❌ Failed to initialize database: %v", err)
+		logger.Error("Failed to initialize database", slog.Any("error", err))
+		os.Exit(1)
 	}
-	log.Println("✅ Database initialized successfully")
 
-	redisClient, err := redis.NewRedisClient(cfg)
+	redisClient, err := redis.NewRedisClient(cfg, logger)
 	if err != nil {
-		log.Fatalf("❌ Failed to initialize Redis: %v", err)
+		logger.Error("Failed to initialize Redis", slog.Any("error", err))
+		os.Exit(1)
 	}
 	defer redisClient.Close()
-	log.Println("✅ Redis initialized successfully")
 
-	mqttClient, err := mqtt.NewClient(cfg, db, redisClient, db.UoW)
+	mqttClient, err := mqtt.NewClient(cfg, db, redisClient, db.UoW, logger)
 	if err != nil {
-		log.Fatalf("❌ Failed to initialize MQTT client: %v", err)
+		logger.Error("Failed to initialize MQTT client", slog.Any("error", err))
+		os.Exit(1)
 	}
 	defer mqttClient.Disconnect()
-	log.Println("✅ MQTT client initialized successfully")
 
 	time.Sleep(2 * time.Second)
 	mqttClient.LogSubscribedTopics()
 
+	// Initialize Transport & Message Services
 	messageGenerator := message.NewMessageGenerator()
-	transportManager := transport.NewTransportManager()
-	mqttTransport := transport.NewMQTTTransport(mqttClient.GetClient(), cfg.Timeout)
+	transportManager := transport.NewTransportManager(logger)
+	mqttTransport := transport.NewMQTTTransport(mqttClient.GetClient(), cfg.Timeout, logger)
 	transportManager.RegisterTransport(transport.TransportTypeMQTT, mqttTransport)
-	httpTransport := transport.NewHTTPTransport(cfg.Timeout, "MQTT-Bridge/"+cfg.Version)
+	httpTransport := transport.NewHTTPTransport(cfg.Timeout, "MQTT-Bridge/"+cfg.Version, logger)
 	transportManager.RegisterTransport(transport.TransportTypeHTTP, httpTransport)
 	transportManager.SetDefaultTransport(transport.TransportTypeMQTT)
-	messageService := services.NewMessageService(messageGenerator, transportManager)
+	messageService := services.NewMessageService(messageGenerator, transportManager, logger)
 
-	// --- (CORRECTED) SERVICE INITIALIZATION WITH DEPENDENCY INJECTION ---
-
-	actionService := services.NewActionService(db.ActionRepo, db.UoW)
-
-	nodeService := services.NewNodeService(db.NodeRepo, actionService, db.UoW)
-	edgeService := services.NewEdgeService(db.EdgeRepo, actionService, db.UoW)
-
-	orderTemplateService := services.NewOrderTemplateService(db.OrderTemplateRepo, db.ActionRepo, db.UoW)
-
-	// Correct: NewOrderExecutionService now expects `db.ActionRepo` (the repository), NOT `actionService`.
+	// Initialize Services with all dependencies
+	actionService := services.NewActionService(db.ActionRepo, db.UoW, logger)
+	nodeService := services.NewNodeService(db.NodeRepo, actionService, db.UoW, logger)
+	edgeService := services.NewEdgeService(db.EdgeRepo, actionService, db.UoW, logger)
+	orderTemplateService := services.NewOrderTemplateService(db.OrderTemplateRepo, db.ActionRepo, db.UoW, logger)
 	orderExecutionService := services.NewOrderExecutionService(
 		db.OrderExecutionRepo,
 		db.OrderTemplateRepo,
 		db.ConnectionRepo,
-		db.ActionRepo, // Pass the repository
+		db.ActionRepo,
 		redisClient,
 		mqttClient,
 		db.UoW,
+		logger,
 	)
-
 	orderService := &services.OrderService{TemplateService: orderTemplateService, ExecutionService: orderExecutionService}
+	bridgeService := services.NewBridgeService(db.ConnectionRepo, db.FactsheetRepo, db.OrderExecutionRepo, redisClient, messageService, db.UoW, logger)
 
-	// Correct: BridgeService now takes the UnitOfWork.
-	bridgeService := services.NewBridgeService(
-		db.ConnectionRepo,
-		db.FactsheetRepo,
-		db.OrderExecutionRepo,
-		redisClient,
-		messageService,
-		db.UoW,
-	)
-
-	// --- HANDLER INITIALIZATION ---
+	// Initialize Handlers
 	apiHandler := handlers.NewAPIHandler(bridgeService)
 	orderHandler := handlers.NewOrderHandler(orderService)
 	nodeHandler := handlers.NewNodeHandler(nodeService)
 	edgeHandler := handlers.NewEdgeHandler(edgeService)
 	actionHandler := handlers.NewActionHandler(actionService)
 
+	// Setup Echo Server
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = true
 	e.HTTPErrorHandler = handlers.CustomHTTPErrorHandler
-	e.Use(middleware.Logger(), middleware.Recover(), middleware.CORS(), middleware.RequestID())
+	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
+		LogValuesFunc: func(c echo.Context, v middleware.RequestLoggerValues) error {
+			logger.Info("incoming request",
+				slog.String("method", v.Method),
+				slog.String("uri", v.URI),
+				slog.Int("status", v.Status),
+				slog.String("latency", v.Latency.String()),
+				slog.String("request_id", v.RequestID),
+			)
+			return nil
+		},
+		LogLatency:   true,
+		LogMethod:    true,
+		LogURI:       true,
+		LogStatus:    true,
+		LogRequestID: true,
+	}))
+	e.Use(middleware.Recover())
+	e.Use(middleware.CORS())
+
 	setupRoutes(e, apiHandler, orderHandler, nodeHandler, edgeHandler, actionHandler)
 
+	// Start server and handle graceful shutdown
 	go func() {
-		log.Println("🚀 MQTT Bridge Server Started Successfully!")
-		log.Printf("   • Address: http://localhost:8080")
-		log.Printf("   • Default Transport: %s", transportManager.GetDefaultTransport())
+		logger.Info("MQTT Bridge Server is starting...", "address", "http://localhost:8080", "default_transport", transportManager.GetDefaultTransport())
 		if err := e.Start(":8080"); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("❌ Echo server failed: %v", err)
+			logger.Error("Echo server failed to start", slog.Any("error", err))
+			os.Exit(1)
 		}
 	}()
 
@@ -119,17 +128,17 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("⚠️  Shutdown signal received. Starting graceful shutdown...")
+	logger.Warn("Shutdown signal received. Starting graceful shutdown...")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := messageService.Close(); err != nil {
-		log.Printf("⚠️  Error closing message service: %v", err)
+		logger.Error("Error closing message service", slog.Any("error", err))
 	}
 	if err := e.Shutdown(ctx); err != nil {
-		log.Printf("⚠️  Echo server shutdown error: %v", err)
+		logger.Error("Echo server shutdown error", slog.Any("error", err))
 	}
-	log.Println("👋 MQTT Bridge Server stopped gracefully")
+	logger.Info("MQTT Bridge Server stopped gracefully")
 }
 
 func setupRoutes(e *echo.Echo, apiHandler *handlers.APIHandler, orderHandler *handlers.OrderHandler, nodeHandler *handlers.NodeHandler, edgeHandler *handlers.EdgeHandler, actionHandler *handlers.ActionHandler) {

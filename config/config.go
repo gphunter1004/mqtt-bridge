@@ -9,39 +9,39 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// Config holds all configuration for the application.
+// Config holds all configuration for the application, loaded from environment variables.
 type Config struct {
-	// Database
+	// Database settings
 	DBHost     string
 	DBPort     string
 	DBUser     string
 	DBPassword string
 	DBName     string
 
-	// Redis
+	// Redis settings
 	RedisHost     string
 	RedisPort     string
 	RedisPassword string
 	RedisDB       int
 
-	// MQTT
+	// MQTT settings
 	MQTTBroker   string
 	MQTTPort     string
 	MQTTClientID string
 	MQTTUsername string
 	MQTTPassword string
 
-	// Application
-	LogLevel string
-	Timeout  time.Duration
-	Version  string // Added application version field
+	// Application settings
+	LogLevel string        // Added for structured logging (e.g., "DEBUG", "INFO")
+	Timeout  time.Duration // General purpose timeout for operations
+	Version  string        // Added for application version tracking
 }
 
-// LoadConfig loads configuration from .env file or environment variables.
+// LoadConfig loads configuration from a .env file or environment variables.
 func LoadConfig() *Config {
-	err := godotenv.Load()
-	if err != nil {
-		log.Printf("Warning: .env file not found, using environment variables")
+	// Attempt to load .env file. It's okay if it doesn't exist; environment variables will be used as a fallback.
+	if err := godotenv.Load(); err != nil {
+		log.Println("Warning: .env file not found, using environment variables.")
 	}
 
 	redisDB, _ := strconv.Atoi(getEnv("REDIS_DB", "0"))
@@ -69,13 +69,13 @@ func LoadConfig() *Config {
 		MQTTPassword: getEnv("MQTT_PASSWORD", ""),
 
 		// Application settings
-		LogLevel: getEnv("LOG_LEVEL", "info"),
-		Timeout:  time.Duration(timeoutSec) * time.Second,
-		Version:  getEnv("APP_VERSION", "1.0.0"), // Load version
+		LogLevel: getEnv("LOG_LEVEL", "INFO"),             // Default log level is INFO
+		Timeout:  time.Duration(timeoutSec) * time.Second, // Default timeout is 30 seconds
+		Version:  getEnv("APP_VERSION", "1.0.0-snapshot"), // Default version
 	}
 }
 
-// getEnv retrieves an environment variable or returns a default value.
+// getEnv retrieves an environment variable by key or returns a default value.
 func getEnv(key, defaultValue string) string {
 	if value, exists := os.LookupEnv(key); exists {
 		return value

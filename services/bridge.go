@@ -3,7 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"mqtt-bridge/database"
@@ -23,6 +23,7 @@ type BridgeService struct {
 	redis              *redis.RedisClient
 	messageService     *MessageService
 	uow                database.UnitOfWorkInterface
+	logger             *slog.Logger
 }
 
 // Custom request types for enhanced order creation.
@@ -72,6 +73,7 @@ func NewBridgeService(
 	redisClient *redis.RedisClient,
 	messageService *MessageService,
 	uow database.UnitOfWorkInterface,
+	logger *slog.Logger,
 ) *BridgeService {
 	return &BridgeService{
 		connectionRepo:     connectionRepo,
@@ -80,6 +82,7 @@ func NewBridgeService(
 		redis:              redisClient,
 		messageService:     messageService,
 		uow:                uow,
+		logger:             logger.With("service", "bridge_service"),
 	}
 }
 
@@ -114,8 +117,8 @@ func (bs *BridgeService) GetRobotCapabilities(serialNumber string) (*models.Robo
 func (bs *BridgeService) GetRobotManufacturer(serialNumber string) string {
 	manufacturer, err := bs.connectionRepo.GetRobotManufacturer(serialNumber)
 	if err != nil {
-		log.Printf("[Bridge Service] Could not get manufacturer for robot %s: %v", serialNumber, err)
-		return "Roboligent" // Default fallback
+		bs.logger.Warn("Could not get manufacturer, falling back to default", "serialNumber", serialNumber, slog.Any("error", err))
+		return "Roboligent"
 	}
 	return manufacturer
 }
@@ -183,7 +186,6 @@ func (bs *BridgeService) SendOrderToRobotWithTransport(serialNumber string, orde
 	if err := bs.messageService.SendOrderMessage(ctx, req, transportType); err != nil {
 		return utils.NewInternalServerError(fmt.Sprintf("Failed to send order via %s.", transportType), err)
 	}
-	log.Printf("Order %s sent successfully to robot %s via %s", orderData.OrderID, serialNumber, transportType)
 	return nil
 }
 
@@ -208,7 +210,6 @@ func (bs *BridgeService) SendCustomActionWithTransport(serialNumber string, acti
 	if err := bs.messageService.SendInstantActionMessage(ctx, req, transportType); err != nil {
 		return utils.NewInternalServerError(fmt.Sprintf("Failed to send custom action via %s.", transportType), err)
 	}
-	log.Printf("Custom action sent successfully to robot %s via %s", serialNumber, transportType)
 	return nil
 }
 
@@ -377,21 +378,20 @@ func (bs *BridgeService) createDynamicOrder(req *DynamicOrderRequest, transportT
 	if err := bs.uow.Commit(tx); err != nil {
 		return utils.NewInternalServerError("Failed to commit dynamic order transaction.", err)
 	}
-	log.Printf("Dynamic order %s sent to robot %s", orderID, req.SerialNumber)
+	bs.logger.Info("Dynamic order sent successfully", "orderId", orderID, "serialNumber", req.SerialNumber)
 	return nil
 }
 
-// updateOrderStatus now manages its own transaction for atomicity.
 func (bs *BridgeService) updateOrderStatus(orderID, status, errorMessage string) {
 	tx := bs.uow.Begin()
 	if err := bs.orderExecutionRepo.UpdateOrderStatus(tx, orderID, status, errorMessage); err != nil {
 		bs.uow.Rollback(tx)
-		log.Printf("[ERROR] Failed to update order status for order %s: %v", orderID, err)
+		bs.logger.Error("Failed to update order status", "orderId", orderID, "status", status, slog.Any("error", err))
 	} else {
 		if err := tx.Commit().Error; err != nil {
-			log.Printf("[ERROR] Failed to commit order status update for order %s: %v", orderID, err)
+			bs.logger.Error("Failed to commit order status update", "orderId", orderID, slog.Any("error", err))
 		} else {
-			log.Printf("Order %s status updated to %s", orderID, status)
+			bs.logger.Info("Order status updated", "orderId", orderID, "status", status)
 		}
 	}
 }
@@ -413,7 +413,7 @@ func (bs *BridgeService) SetDefaultTransport(transportType transport.TransportTy
 	for _, t := range availableTransports {
 		if t == transportType {
 			bs.messageService.SetDefaultTransport(transportType)
-			log.Printf("[Bridge Service] Default transport changed to: %s", transportType)
+			bs.logger.Info("Default transport changed", "transport", transportType)
 			return nil
 		}
 	}

@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"log/slog"
 
 	"mqtt-bridge/database"
 	"mqtt-bridge/models"
@@ -13,7 +14,8 @@ import (
 type OrderTemplateService struct {
 	orderTemplateRepo interfaces.OrderTemplateRepositoryInterface
 	actionRepo        interfaces.ActionRepositoryInterface
-	uow               database.UnitOfWorkInterface // UnitOfWork for transaction management
+	uow               database.UnitOfWorkInterface
+	logger            *slog.Logger
 }
 
 // NewOrderTemplateService creates a new instance of OrderTemplateService.
@@ -21,11 +23,13 @@ func NewOrderTemplateService(
 	orderTemplateRepo interfaces.OrderTemplateRepositoryInterface,
 	actionRepo interfaces.ActionRepositoryInterface,
 	uow database.UnitOfWorkInterface,
+	logger *slog.Logger,
 ) *OrderTemplateService {
 	return &OrderTemplateService{
 		orderTemplateRepo: orderTemplateRepo,
 		actionRepo:        actionRepo,
 		uow:               uow,
+		logger:            logger.With("service", "order_template_service"),
 	}
 }
 
@@ -68,7 +72,8 @@ func (ots *OrderTemplateService) CreateOrderTemplate(req *models.CreateOrderTemp
 		return nil, utils.NewInternalServerError("Failed to commit transaction for order template creation.", err)
 	}
 
-	return ots.orderTemplateRepo.GetOrderTemplate(createdTemplate.ID)
+	ots.logger.Info("Successfully created order template", "templateId", createdTemplate.ID, "name", createdTemplate.Name)
+	return createdTemplate, nil
 }
 
 // GetOrderTemplate retrieves a single order template by its ID.
@@ -93,9 +98,11 @@ func (ots *OrderTemplateService) GetOrderTemplateWithDetails(id uint) (*models.O
 		actionIDs, _ := node.GetActionTemplateIDs()
 		for _, actionID := range actionIDs {
 			action, err := ots.actionRepo.GetActionTemplate(actionID)
-			if err == nil {
-				actions = append(actions, *action)
+			if err != nil {
+				ots.logger.Warn("Could not find action template for node", "nodeId", node.NodeID, "actionTemplateId", actionID, slog.Any("error", err))
+				continue
 			}
+			actions = append(actions, *action)
 		}
 		nodesWithActions = append(nodesWithActions, models.NodeWithActions{NodeTemplate: node, Actions: actions})
 	}
@@ -106,9 +113,11 @@ func (ots *OrderTemplateService) GetOrderTemplateWithDetails(id uint) (*models.O
 		actionIDs, _ := edge.GetActionTemplateIDs()
 		for _, actionID := range actionIDs {
 			action, err := ots.actionRepo.GetActionTemplate(actionID)
-			if err == nil {
-				actions = append(actions, *action)
+			if err != nil {
+				ots.logger.Warn("Could not find action template for edge", "edgeId", edge.EdgeID, "actionTemplateId", actionID, slog.Any("error", err))
+				continue
 			}
+			actions = append(actions, *action)
 		}
 		edgesWithActions = append(edgesWithActions, models.EdgeWithActions{EdgeTemplate: edge, Actions: actions})
 	}
@@ -146,8 +155,14 @@ func (ots *OrderTemplateService) UpdateOrderTemplate(id uint, req *models.Create
 		return nil, utils.NewInternalServerError(fmt.Sprintf("Failed to update order template with ID %d.", id), err)
 	}
 
-	ots.orderTemplateRepo.RemoveNodeAssociations(tx, id)
-	ots.orderTemplateRepo.RemoveEdgeAssociations(tx, id)
+	if err := ots.orderTemplateRepo.RemoveNodeAssociations(tx, id); err != nil {
+		ots.uow.Rollback(tx)
+		return nil, utils.NewInternalServerError("Failed to remove old node associations.", err)
+	}
+	if err := ots.orderTemplateRepo.RemoveEdgeAssociations(tx, id); err != nil {
+		ots.uow.Rollback(tx)
+		return nil, utils.NewInternalServerError("Failed to remove old edge associations.", err)
+	}
 
 	if len(req.NodeIDs) > 0 {
 		if err := ots.orderTemplateRepo.AssociateNodes(tx, id, req.NodeIDs); err != nil {
@@ -165,6 +180,7 @@ func (ots *OrderTemplateService) UpdateOrderTemplate(id uint, req *models.Create
 	if err := ots.uow.Commit(tx); err != nil {
 		return nil, utils.NewInternalServerError("Failed to commit transaction for order template update.", err)
 	}
+	ots.logger.Info("Successfully updated order template", "templateId", id)
 	return updatedTemplate, nil
 }
 
@@ -186,6 +202,7 @@ func (ots *OrderTemplateService) DeleteOrderTemplate(id uint) error {
 	if err := ots.uow.Commit(tx); err != nil {
 		return utils.NewInternalServerError("Failed to commit transaction for order template deletion.", err)
 	}
+	ots.logger.Info("Successfully deleted order template", "templateId", id)
 	return nil
 }
 

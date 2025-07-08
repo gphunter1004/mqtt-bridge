@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"log/slog"
 
 	"mqtt-bridge/database"
 	"mqtt-bridge/models"
@@ -20,6 +21,7 @@ type NodeService struct {
 	nodeRepo      interfaces.NodeRepositoryInterface
 	actionService *ActionService
 	uow           database.UnitOfWorkInterface
+	logger        *slog.Logger
 }
 
 // NewNodeService creates a new instance of NodeService.
@@ -27,11 +29,13 @@ func NewNodeService(
 	nodeRepo interfaces.NodeRepositoryInterface,
 	actionService *ActionService,
 	uow database.UnitOfWorkInterface,
+	logger *slog.Logger,
 ) *NodeService {
 	return &NodeService{
 		nodeRepo:      nodeRepo,
 		actionService: actionService,
 		uow:           uow,
+		logger:        logger.With("service", "node_service"),
 	}
 }
 
@@ -55,7 +59,6 @@ func (ns *NodeService) CreateNode(req *models.NodeTemplateRequest) (*models.Node
 
 	var actionTemplateIDs []uint
 	if len(req.Actions) > 0 {
-		// Since this is a creation, actions are created within the same transaction.
 		actionTemplateIDs, err = ns.actionService.RecreateActionTemplatesForOwner(tx, "", req.Actions)
 		if err != nil {
 			ns.uow.Rollback(tx)
@@ -77,11 +80,9 @@ func (ns *NodeService) CreateNode(req *models.NodeTemplateRequest) (*models.Node
 		MapID:                 req.Position.MapID,
 	}
 
-	if len(actionTemplateIDs) > 0 {
-		if err := node.SetActionTemplateIDs(actionTemplateIDs); err != nil {
-			ns.uow.Rollback(tx)
-			return nil, utils.NewInternalServerError("Failed to set action template IDs on node.", err)
-		}
+	if err := node.SetActionTemplateIDs(actionTemplateIDs); err != nil {
+		ns.uow.Rollback(tx)
+		return nil, utils.NewInternalServerError("Failed to set action template IDs on node.", err)
 	}
 
 	createdNode, err := ns.nodeRepo.CreateNode(tx, node)
@@ -94,6 +95,7 @@ func (ns *NodeService) CreateNode(req *models.NodeTemplateRequest) (*models.Node
 		return nil, utils.NewInternalServerError("Failed to commit transaction for node creation.", err)
 	}
 
+	ns.logger.Info("Successfully created node", "nodeId", createdNode.NodeID, "dbId", createdNode.ID)
 	return createdNode, nil
 }
 
@@ -158,7 +160,6 @@ func (ns *NodeService) UpdateNode(nodeID uint, req *models.NodeTemplateRequest) 
 		}
 	}()
 
-	// Pass the transaction `tx` to the action service ---
 	newActionIDs, err := ns.actionService.RecreateActionTemplatesForOwner(tx, existingNode.ActionTemplateIDs, req.Actions)
 	if err != nil {
 		ns.uow.Rollback(tx)
@@ -194,6 +195,7 @@ func (ns *NodeService) UpdateNode(nodeID uint, req *models.NodeTemplateRequest) 
 		return nil, utils.NewInternalServerError("Failed to commit transaction for node update.", err)
 	}
 
+	ns.logger.Info("Successfully updated node", "nodeId", updatedNode.NodeID, "dbId", updatedNode.ID)
 	return updatedNode, nil
 }
 
@@ -216,5 +218,6 @@ func (ns *NodeService) DeleteNode(nodeID uint) error {
 		return utils.NewInternalServerError("Failed to commit transaction for node deletion.", err)
 	}
 
+	ns.logger.Info("Successfully deleted node", "dbId", nodeID)
 	return nil
 }

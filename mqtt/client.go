@@ -3,7 +3,7 @@ package mqtt
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -14,9 +14,7 @@ import (
 	"mqtt-bridge/models"
 	"mqtt-bridge/redis"
 
-	// --- (FIXED) Corrected the import path ---
 	mqtt "github.com/eclipse/paho.mqtt.golang"
-	// --- END OF FIX ---
 )
 
 // Client wraps the PAHO MQTT client and adds application-specific logic.
@@ -26,12 +24,13 @@ type Client struct {
 	redis        *redis.RedisClient
 	uow          database.UnitOfWorkInterface
 	msgGenerator message.MessageGenerator
+	logger       *slog.Logger
 	headerIDMap  map[string]int
 	headerIDMux  sync.RWMutex
 }
 
 // NewClient creates and connects a new MQTT client.
-func NewClient(cfg *config.Config, db *database.Database, redisClient *redis.RedisClient, uow database.UnitOfWorkInterface) (*Client, error) {
+func NewClient(cfg *config.Config, db *database.Database, redisClient *redis.RedisClient, uow database.UnitOfWorkInterface, logger *slog.Logger) (*Client, error) {
 	opts := mqtt.NewClientOptions().
 		AddBroker(cfg.MQTTBroker).
 		SetClientID(cfg.MQTTClientID).
@@ -48,6 +47,7 @@ func NewClient(cfg *config.Config, db *database.Database, redisClient *redis.Red
 		redis:        redisClient,
 		uow:          uow,
 		msgGenerator: message.NewMessageGenerator(),
+		logger:       logger.With("component", "mqtt_client"),
 		headerIDMap:  make(map[string]int),
 	}
 
@@ -71,17 +71,17 @@ func (c *Client) GetClient() mqtt.Client {
 func (c *Client) Disconnect() {
 	if c.client.IsConnected() {
 		c.client.Disconnect(250)
-		log.Println("[MQTT] Client disconnected")
+		c.logger.Info("MQTT Client disconnected")
 	}
 }
 
 func (c *Client) onConnect(client mqtt.Client) {
-	log.Println("[MQTT] Successfully connected. Subscribing to topics...")
+	c.logger.Info("Successfully connected to MQTT broker. Subscribing to topics...")
 	c.subscribeToAllTopics()
 }
 
 func (c *Client) onConnectionLost(client mqtt.Client, err error) {
-	log.Printf("[MQTT ERROR] Connection lost: %v. Reconnecting...", err)
+	c.logger.Error("Connection lost. Reconnecting...", slog.Any("error", err))
 }
 
 func (c *Client) subscribeToAllTopics() {
@@ -93,20 +93,20 @@ func (c *Client) subscribeToAllTopics() {
 
 func (c *Client) subscribe(topic string, handler mqtt.MessageHandler) {
 	if token := c.client.Subscribe(topic, 1, handler); token.Wait() && token.Error() != nil {
-		log.Printf("[MQTT ERROR] Failed to subscribe to topic '%s': %v", topic, token.Error())
+		c.logger.Error("Failed to subscribe to topic", "topic", topic, slog.Any("error", token.Error()))
 	} else {
-		log.Printf("[MQTT] Successfully subscribed to topic: %s", topic)
+		c.logger.Info("Successfully subscribed to topic", "topic", topic)
 	}
 }
 
-// handleConnectionMessage processes connection status updates within a transaction.
 func (c *Client) handleConnectionMessage(client mqtt.Client, msg mqtt.Message) {
-	log.Printf("[MQTT RECV] Connection message on topic: %s", msg.Topic())
+	c.logger.Info("Connection message received", "topic", msg.Topic())
 	var connMsg models.ConnectionMessage
 	manufacturer, serialNumber, err := c.parseMessage(msg, &connMsg)
 	if err != nil {
-		return
+		return // parseMessage already logs the error
 	}
+	logger := c.logger.With("serialNumber", serialNumber, "manufacturer", manufacturer)
 
 	tx := c.uow.Begin()
 	defer func() {
@@ -118,33 +118,33 @@ func (c *Client) handleConnectionMessage(client mqtt.Client, msg mqtt.Message) {
 
 	if err := c.db.SaveConnectionState(tx, &connMsg); err != nil {
 		c.uow.Rollback(tx)
-		log.Printf("[DB ERROR] Failed to save connection state for %s: %v", serialNumber, err)
+		logger.Error("Failed to save connection state", slog.Any("error", err))
 		return
 	}
 
 	if err := c.uow.Commit(tx); err != nil {
-		log.Printf("[DB ERROR] Failed to commit connection state transaction for %s: %v", serialNumber, err)
+		logger.Error("Failed to commit connection state transaction", slog.Any("error", err))
 		return
 	}
 
 	if err := c.redis.SaveConnectionStatus(serialNumber, connMsg.ConnectionState); err != nil {
-		log.Printf("[REDIS ERROR] Failed to save connection status for %s: %v", serialNumber, err)
+		logger.Error("Failed to save connection status to Redis", slog.Any("error", err))
 	}
 
 	if connMsg.ConnectionState == "ONLINE" {
-		log.Printf("[MQTT ACTION] Robot %s is online, requesting factsheet.", serialNumber)
+		logger.Info("Robot came online, requesting factsheet.")
 		go c.requestFactsheet(serialNumber, manufacturer)
 	}
 }
 
-// handleFactsheetMessage processes capability information within a transaction.
 func (c *Client) handleFactsheetMessage(client mqtt.Client, msg mqtt.Message) {
-	log.Printf("[MQTT RECV] Factsheet message on topic: %s", msg.Topic())
+	c.logger.Info("Factsheet message received", "topic", msg.Topic())
 	var factsheetMsg models.FactsheetMessage
 	_, serialNumber, err := c.parseMessage(msg, &factsheetMsg)
 	if err != nil {
 		return
 	}
+	logger := c.logger.With("serialNumber", serialNumber)
 
 	tx := c.uow.Begin()
 	defer func() {
@@ -156,14 +156,14 @@ func (c *Client) handleFactsheetMessage(client mqtt.Client, msg mqtt.Message) {
 
 	if err := c.db.SaveOrUpdateFactsheet(tx, &factsheetMsg); err != nil {
 		c.uow.Rollback(tx)
-		log.Printf("[DB ERROR] Failed to save factsheet for %s: %v", serialNumber, err)
+		logger.Error("Failed to save factsheet", slog.Any("error", err))
 		return
 	}
 
 	if err := c.uow.Commit(tx); err != nil {
-		log.Printf("[DB ERROR] Failed to commit factsheet transaction for %s: %v", serialNumber, err)
+		logger.Error("Failed to commit factsheet transaction", slog.Any("error", err))
 	} else {
-		log.Printf("[DB SUCCESS] Factsheet for %s saved successfully.", serialNumber)
+		logger.Info("Factsheet saved successfully")
 	}
 }
 
@@ -173,17 +173,20 @@ func (c *Client) handleStateMessage(client mqtt.Client, msg mqtt.Message) {
 	if err != nil {
 		return
 	}
+	logger := c.logger.With("serialNumber", serialNumber)
+
 	if err := c.redis.SaveState(serialNumber, &stateMsg); err != nil {
-		log.Printf("[REDIS ERROR] Failed to save state for %s: %v", serialNumber, err)
+		logger.Error("Failed to save state to Redis", slog.Any("error", err))
 	}
+
 	if !stateMsg.AgvPosition.PositionInitialized {
-		log.Printf("[MQTT ACTION] Robot %s position not initialized, sending initPosition command.", serialNumber)
+		logger.Warn("Robot position not initialized, sending initPosition command.")
 		go c.sendInitPosition(serialNumber, manufacturer)
 	}
 }
 
 func (c *Client) handleOrderResponse(client mqtt.Client, msg mqtt.Message) {
-	log.Printf("[MQTT RECV] Order response on topic: %s", msg.Topic())
+	c.logger.Info("Order response received", "topic", msg.Topic(), "payload", string(msg.Payload()))
 }
 
 func (c *Client) SendOrder(serialNumber string, orderMsg *models.OrderMessage) error {
@@ -203,7 +206,7 @@ func (c *Client) SendOrder(serialNumber string, orderMsg *models.OrderMessage) e
 	}
 	payload, err := c.msgGenerator.GenerateOrderMessage(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to generate order message: %w", err)
 	}
 	return c.publish(topic, payload)
 }
@@ -216,8 +219,9 @@ func (c *Client) requestFactsheet(serialNumber, manufacturer string) error {
 	}
 	payload, err := c.msgGenerator.GenerateFactsheetRequestMessage(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to generate factsheet request: %w", err)
 	}
+	c.logger.Info("Requesting factsheet", "serialNumber", serialNumber)
 	return c.publish(topic, payload)
 }
 
@@ -230,8 +234,9 @@ func (c *Client) sendInitPosition(serialNumber, manufacturer string) error {
 	}
 	payload, err := c.msgGenerator.GenerateInitPositionMessage(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to generate initPosition message: %w", err)
 	}
+	c.logger.Info("Sending initPosition command", "serialNumber", serialNumber)
 	return c.publish(topic, payload)
 }
 
@@ -242,7 +247,7 @@ func (c *Client) publish(topic string, payload []byte) error {
 	token := c.client.Publish(topic, 1, false, payload)
 	go func() {
 		if token.WaitTimeout(5*time.Second) && token.Error() != nil {
-			log.Printf("[MQTT ERROR] Failed to publish to topic '%s': %v", topic, token.Error())
+			c.logger.Error("Failed to publish message", "topic", topic, slog.Any("error", token.Error()))
 		}
 	}()
 	return nil
@@ -253,12 +258,12 @@ func (c *Client) parseMessage(msg mqtt.Message, v interface{}) (manufacturer, se
 	parts := strings.Split(topic, "/")
 	if len(parts) < 4 {
 		err = fmt.Errorf("invalid topic structure: %s", topic)
-		log.Printf("[MQTT ERROR] %v", err)
+		c.logger.Error("Failed to parse MQTT message", "topic", topic, slog.Any("error", err))
 		return
 	}
 	manufacturer, serialNumber = parts[2], parts[3]
 	if err = json.Unmarshal(msg.Payload(), v); err != nil {
-		log.Printf("[MQTT ERROR] Failed to unmarshal JSON for topic %s: %v", topic, err)
+		c.logger.Error("Failed to unmarshal JSON payload", "topic", topic, slog.Any("error", err))
 		return
 	}
 	return
@@ -269,10 +274,10 @@ func (c *Client) getTopic(manufacturer, serialNumber, messageType string) string
 }
 
 func (c *Client) LogSubscribedTopics() {
-	log.Println("--- Subscribed Topics (Robot -> Bridge) ---")
-	log.Println("1. meili/v2/+/+/connection")
-	log.Println("2. meili/v2/+/+/factsheet")
-	log.Println("3. meili/v2/+/+/state")
-	log.Println("4. meili/v2/+/+/orderResponse")
-	log.Println("-------------------------------------------")
+	c.logger.Info("--- Subscribed Topics (Robot -> Bridge) ---")
+	c.logger.Info("1. meili/v2/+/+/connection")
+	c.logger.Info("2. meili/v2/+/+/factsheet")
+	c.logger.Info("3. meili/v2/+/+/state")
+	c.logger.Info("4. meili/v2/+/+/orderResponse")
+	c.logger.Info("-------------------------------------------")
 }

@@ -106,7 +106,7 @@ func GetPaginationParams(limitStr, offsetStr string, defaultLimit int) Paginatio
 	return PaginationParams{Limit: limit, Offset: offset}
 }
 
-// ParseUintParam parses a URL parameter into a uint, returning a custom error on failure.
+// ParseUintParam parses a URL parameter into a uint, returning a custom AppError on failure.
 func ParseUintParam(c echo.Context, paramName string) (uint, error) {
 	idStr := c.Param(paramName)
 	id, err := strconv.ParseUint(idStr, 10, 32)
@@ -116,12 +116,12 @@ func ParseUintParam(c echo.Context, paramName string) (uint, error) {
 	return uint(id), nil
 }
 
-// BindAndValidate binds the request body and returns a custom error on failure.
+// BindAndValidate binds the request body and returns a custom AppError on failure.
 func BindAndValidate(c echo.Context, req interface{}) error {
 	if err := c.Bind(req); err != nil {
 		return NewBadRequestError("Invalid request body: please check the JSON format.", err)
 	}
-	// TODO: Add validation logic here
+	// TODO: Add struct validation if needed (e.g., using 'go-playground/validator')
 	return nil
 }
 

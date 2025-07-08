@@ -4,19 +4,16 @@ import (
 	"net/http"
 )
 
-// AppError defines the standard application error structure.
 type AppError struct {
-	Code    int    // HTTP status code
+	Code    int    // HTTP status code (e.g., 404, 400, 500)
 	Message string // User-facing message
-	err     error  // Internal-facing error for logging
+	err     error  // Internal-facing error for logging purposes
 }
 
-// Error satisfies the error interface.
 func (e *AppError) Error() string {
 	return e.Message
 }
 
-// Unwrap provides compatibility with errors.Is and errors.As.
 func (e *AppError) Unwrap() error {
 	return e.err
 }

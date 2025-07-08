@@ -3,7 +3,7 @@ package services
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"mqtt-bridge/database"
 	"mqtt-bridge/models"
@@ -17,18 +17,19 @@ import (
 type ActionService struct {
 	actionRepo interfaces.ActionRepositoryInterface
 	uow        database.UnitOfWorkInterface
+	logger     *slog.Logger
 }
 
 // NewActionService creates a new instance of ActionService.
-func NewActionService(actionRepo interfaces.ActionRepositoryInterface, uow database.UnitOfWorkInterface) *ActionService {
+func NewActionService(actionRepo interfaces.ActionRepositoryInterface, uow database.UnitOfWorkInterface, logger *slog.Logger) *ActionService {
 	return &ActionService{
 		actionRepo: actionRepo,
 		uow:        uow,
+		logger:     logger.With("service", "action_service"),
 	}
 }
 
-// CreateActionTemplate creates a new action template.
-// It manages its own transaction if one isn't provided (tx is nil).
+// CreateActionTemplate creates a new action template, managing its own transaction if one isn't provided.
 func (as *ActionService) CreateActionTemplate(tx *gorm.DB, req *models.ActionTemplateRequest) (*models.ActionTemplate, error) {
 	isOwnTransaction := tx == nil
 	if isOwnTransaction {
@@ -70,7 +71,7 @@ func (as *ActionService) RecreateActionTemplatesForOwner(tx *gorm.DB, oldActionI
 		oldActionIDs, err := utils.ParseJSONToUintSlice(oldActionIDsJSON)
 		if err == nil && len(oldActionIDs) > 0 {
 			if err := as.actionRepo.DeleteActionTemplate(tx, oldActionIDs...); err != nil {
-				log.Printf("Warning: failed to delete old action templates %v: %v", oldActionIDs, err)
+				as.logger.Warn("Failed to delete old action templates during recreation", "ids", oldActionIDs, slog.Any("error", err))
 			}
 		}
 	}
@@ -79,7 +80,7 @@ func (as *ActionService) RecreateActionTemplatesForOwner(tx *gorm.DB, oldActionI
 	for _, actionReq := range newActions {
 		createdAction, err := as.CreateActionTemplate(tx, &actionReq)
 		if err != nil {
-			log.Printf("Warning: failed to create new action template during recreation: %v", err)
+			as.logger.Warn("Failed to create new action template during recreation, skipping", "actionType", actionReq.ActionType, slog.Any("error", err))
 			continue
 		}
 		newActionIDs = append(newActionIDs, createdAction.ID)
@@ -214,6 +215,6 @@ func (as *ActionService) CloneActionTemplate(sourceActionID uint, newActionID st
 		req.Parameters[i] = models.ActionParameterTemplateRequest{Key: param.Key, Value: value, ValueType: param.ValueType}
 	}
 
-	// Since CreateActionTemplate can now manage its own transaction, we pass nil.
+	// Create the new cloned action. This will manage its own transaction.
 	return as.CreateActionTemplate(nil, req)
 }

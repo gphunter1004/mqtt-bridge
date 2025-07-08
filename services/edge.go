@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"log/slog"
 
 	"mqtt-bridge/database"
 	"mqtt-bridge/models"
@@ -14,6 +15,7 @@ type EdgeService struct {
 	edgeRepo      interfaces.EdgeRepositoryInterface
 	actionService *ActionService
 	uow           database.UnitOfWorkInterface
+	logger        *slog.Logger
 }
 
 // NewEdgeService creates a new instance of EdgeService.
@@ -21,11 +23,13 @@ func NewEdgeService(
 	edgeRepo interfaces.EdgeRepositoryInterface,
 	actionService *ActionService,
 	uow database.UnitOfWorkInterface,
+	logger *slog.Logger,
 ) *EdgeService {
 	return &EdgeService{
 		edgeRepo:      edgeRepo,
 		actionService: actionService,
 		uow:           uow,
+		logger:        logger.With("service", "edge_service"),
 	}
 }
 
@@ -81,6 +85,7 @@ func (es *EdgeService) CreateEdge(req *models.EdgeTemplateRequest) (*models.Edge
 		return nil, utils.NewInternalServerError("Failed to commit transaction for edge creation.", err)
 	}
 
+	es.logger.Info("Successfully created edge", "edgeId", createdEdge.EdgeID, "dbId", createdEdge.ID)
 	return createdEdge, nil
 }
 
@@ -145,13 +150,11 @@ func (es *EdgeService) UpdateEdge(edgeID uint, req *models.EdgeTemplateRequest) 
 		}
 	}()
 
-	// --- (FIXED) Pass the transaction `tx` to the action service ---
 	newActionIDs, err := es.actionService.RecreateActionTemplatesForOwner(tx, existingEdge.ActionTemplateIDs, req.Actions)
 	if err != nil {
 		es.uow.Rollback(tx)
 		return nil, utils.NewInternalServerError("Failed to update action templates for edge.", err)
 	}
-	// --- END OF FIX ---
 
 	edgeToUpdate := &models.EdgeTemplate{
 		EdgeID:      req.EdgeID,
@@ -178,6 +181,7 @@ func (es *EdgeService) UpdateEdge(edgeID uint, req *models.EdgeTemplateRequest) 
 		return nil, utils.NewInternalServerError("Failed to commit transaction for edge update.", err)
 	}
 
+	es.logger.Info("Successfully updated edge", "edgeId", updatedEdge.EdgeID, "dbId", updatedEdge.ID)
 	return updatedEdge, nil
 }
 
@@ -200,5 +204,6 @@ func (es *EdgeService) DeleteEdge(edgeID uint) error {
 		return utils.NewInternalServerError("Failed to commit transaction for edge deletion.", err)
 	}
 
+	es.logger.Info("Successfully deleted edge", "dbId", edgeID)
 	return nil
 }
