@@ -150,51 +150,6 @@ func (h *ActionHandler) DeleteActionTemplate(c echo.Context) error {
 	return c.JSON(http.StatusOK, response)
 }
 
-func (h *ActionHandler) CreateActionLibrary(c echo.Context) error {
-	var req models.ActionLibraryRequest
-	if err := c.Bind(&req); err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
-	}
-
-	action, err := h.actionService.CreateActionLibrary(&req)
-	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to create action library: %v", err))
-	}
-
-	return c.JSON(http.StatusCreated, action)
-}
-
-func (h *ActionHandler) GetActionLibrary(c echo.Context) error {
-	limitStr := c.QueryParam("limit")
-	offsetStr := c.QueryParam("offset")
-
-	limit := 50
-	if limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
-			limit = l
-		}
-	}
-
-	offset := 0
-	if offsetStr != "" {
-		if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
-			offset = o
-		}
-	}
-
-	actions, err := h.actionService.GetActionLibrary(limit, offset)
-	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to get action library: %v", err))
-	}
-
-	response := map[string]interface{}{
-		"library": actions,
-		"count":   len(actions),
-	}
-
-	return c.JSON(http.StatusOK, response)
-}
-
 func (h *ActionHandler) CloneActionTemplate(c echo.Context) error {
 	actionIDStr := c.Param("actionId")
 
@@ -226,22 +181,4 @@ func (h *ActionHandler) CloneActionTemplate(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusCreated, response)
-}
-
-func (h *ActionHandler) ValidateActionTemplate(c echo.Context) error {
-	var req models.ActionValidationRequest
-	if err := c.Bind(&req); err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
-	}
-
-	validation := &models.ActionValidationResponse{
-		IsValid:       true,
-		Errors:        []string{},
-		Warnings:      []string{},
-		Suggestions:   []string{},
-		CanExecute:    true,
-		MissingParams: []string{},
-	}
-
-	return c.JSON(http.StatusOK, validation)
 }

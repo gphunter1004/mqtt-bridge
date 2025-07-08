@@ -14,8 +14,15 @@ type OrderService struct {
 }
 
 func NewOrderService(db *database.Database, redisClient *redis.RedisClient, mqttClient *mqtt.Client) *OrderService {
-	templateService := NewOrderTemplateService(db)
-	executionService := NewOrderExecutionService(db, redisClient, mqttClient, templateService)
+	// Create services with proper repository dependencies
+	templateService := NewOrderTemplateService(db.OrderTemplateRepo, db.ActionRepo)
+	executionService := NewOrderExecutionService(
+		db.OrderExecutionRepo,
+		db.OrderTemplateRepo,
+		db.ConnectionRepo,
+		redisClient,
+		mqttClient,
+	)
 
 	return &OrderService{
 		TemplateService:  templateService,
@@ -33,7 +40,7 @@ func (os *OrderService) GetOrderTemplate(id uint) (*models.OrderTemplate, error)
 	return os.TemplateService.GetOrderTemplate(id)
 }
 
-func (os *OrderService) GetOrderTemplateWithDetails(id uint) (*OrderTemplateWithDetails, error) {
+func (os *OrderService) GetOrderTemplateWithDetails(id uint) (*models.OrderTemplateWithDetails, error) {
 	return os.TemplateService.GetOrderTemplateWithDetails(id)
 }
 

@@ -27,12 +27,6 @@ type RobotHealthStatus struct {
 	LastUpdate          time.Time `json:"lastUpdate"`
 }
 
-type OrderTemplateWithDetails struct {
-	OrderTemplate OrderTemplate  `json:"orderTemplate"`
-	Nodes         []NodeTemplate `json:"nodes"`
-	Edges         []EdgeTemplate `json:"edges"`
-}
-
 // Service Request Models
 type OrderRequest struct {
 	OrderID       string `json:"orderId"`

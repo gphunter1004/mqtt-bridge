@@ -7,7 +7,6 @@ toolchain go1.24.3
 require (
 	github.com/eclipse/paho.mqtt.golang v1.5.0
 	github.com/go-redis/redis/v8 v8.11.5
-	github.com/gorilla/mux v1.8.1
 	github.com/joho/godotenv v1.5.1
 	github.com/labstack/echo/v4 v4.13.4
 	gorm.io/driver/postgres v1.6.0

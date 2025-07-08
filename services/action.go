@@ -64,23 +64,6 @@ func (as *ActionService) DeleteActionTemplate(actionID uint) error {
 	return as.actionRepo.DeleteActionTemplate(actionID)
 }
 
-func (as *ActionService) CreateActionLibrary(req *models.ActionLibraryRequest) (*models.ActionTemplate, error) {
-	// Convert ActionLibraryRequest to ActionTemplateRequest
-	actionReq := &models.ActionTemplateRequest{
-		ActionType:        req.ActionType,
-		ActionID:          req.ActionID,
-		BlockingType:      req.BlockingType,
-		ActionDescription: req.ActionDescription,
-		Parameters:        req.Parameters,
-	}
-
-	return as.CreateActionTemplate(actionReq)
-}
-
-func (as *ActionService) GetActionLibrary(limit, offset int) ([]models.ActionTemplate, error) {
-	return as.ListActionTemplates(limit, offset)
-}
-
 func (as *ActionService) CloneActionTemplate(sourceActionID uint, newActionID string) (*models.ActionTemplate, error) {
 	// Get source action template
 	sourceAction, err := as.actionRepo.GetActionTemplate(sourceActionID)

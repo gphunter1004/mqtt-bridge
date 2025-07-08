@@ -72,12 +72,37 @@ func main() {
 
 	messageService := services.NewMessageService(messageGenerator, transportManager)
 
-	// Initialize Services
-	bridgeService := services.NewBridgeService(db, redisClient, messageService)
-	orderService := services.NewOrderService(db, redisClient, mqttClient)
-	nodeService := services.NewNodeService(db)
-	edgeService := services.NewEdgeService(db)
-	actionService := services.NewActionService(db)
+	// Initialize Services with proper repository dependencies
+	bridgeService := services.NewBridgeService(
+		db.ConnectionRepo,
+		db.FactsheetRepo,
+		db.OrderExecutionRepo,
+		redisClient,
+		messageService,
+	)
+
+	// Initialize individual services with repository dependencies
+	orderExecutionService := services.NewOrderExecutionService(
+		db.OrderExecutionRepo,
+		db.OrderTemplateRepo,
+		db.ConnectionRepo,
+		redisClient,
+		mqttClient,
+	)
+
+	orderTemplateService := services.NewOrderTemplateService(
+		db.OrderTemplateRepo,
+		db.ActionRepo,
+	)
+
+	orderService := &services.OrderService{
+		TemplateService:  orderTemplateService,
+		ExecutionService: orderExecutionService,
+	}
+
+	nodeService := services.NewNodeService(db.NodeRepo, db.ActionRepo)
+	edgeService := services.NewEdgeService(db.EdgeRepo, db.ActionRepo)
+	actionService := services.NewActionService(db.ActionRepo)
 
 	// Initialize Handlers
 	apiHandler := handlers.NewAPIHandler(bridgeService)
@@ -222,11 +247,4 @@ func setupRoutes(e *echo.Echo, apiHandler *handlers.APIHandler, orderHandler *ha
 	api.DELETE("/actions/:actionId", actionHandler.DeleteActionTemplate)
 	api.GET("/actions/by-action-id/:actionId", actionHandler.GetActionTemplateByActionID)
 	api.POST("/actions/:actionId/clone", actionHandler.CloneActionTemplate)
-
-	// Action Library Management
-	api.POST("/actions/library", actionHandler.CreateActionLibrary)
-	api.GET("/actions/library", actionHandler.GetActionLibrary)
-
-	// Action Validation
-	api.POST("/actions/validate", actionHandler.ValidateActionTemplate)
 }
