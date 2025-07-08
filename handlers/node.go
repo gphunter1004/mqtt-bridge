@@ -1,12 +1,14 @@
+// In handlers/node.go
 package handlers
 
 import (
 	"fmt"
 	"net/http"
-	"strconv"
 
+	// 이제 ParseUintParam에서만 사용되므로 이 파일에서는 필요 없을 수 있습니다.
 	"mqtt-bridge/models"
 	"mqtt-bridge/services"
+	"mqtt-bridge/utils" // 유틸리티 패키지 임포트
 
 	"github.com/labstack/echo/v4"
 )
@@ -24,33 +26,35 @@ func NewNodeHandler(nodeService *services.NodeService) *NodeHandler {
 // CreateNode creates a new node
 func (h *NodeHandler) CreateNode(c echo.Context) error {
 	var req models.NodeTemplateRequest
-	if err := c.Bind(&req); err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
+	// BindAndValidate 헬퍼 함수 사용
+	if err := utils.BindAndValidate(c, &req); err != nil {
+		return err
 	}
 
 	node, err := h.nodeService.CreateNode(&req)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to create node: %v", err))
+		// 표준 에러 응답 사용
+		return c.JSON(http.StatusInternalServerError, utils.ErrorResponse(err.Error()))
 	}
 
-	return c.JSON(http.StatusCreated, node)
+	// 표준 성공 응답 사용
+	return c.JSON(http.StatusCreated, utils.SuccessResponse("Node created successfully", node))
 }
 
 // GetNode retrieves a specific node by its database ID
 func (h *NodeHandler) GetNode(c echo.Context) error {
-	nodeIDStr := c.Param("nodeId")
-
-	nodeID, err := strconv.ParseUint(nodeIDStr, 10, 32)
+	// ParseUintParam 헬퍼 함수 사용
+	nodeID, err := utils.ParseUintParam(c, "nodeId")
 	if err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, "Invalid node ID")
+		return err
 	}
 
-	node, err := h.nodeService.GetNode(uint(nodeID))
+	node, err := h.nodeService.GetNode(nodeID)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusNotFound, fmt.Sprintf("Failed to get node: %v", err))
+		return c.JSON(http.StatusNotFound, utils.ErrorResponse(err.Error()))
 	}
 
-	return c.JSON(http.StatusOK, node)
+	return c.JSON(http.StatusOK, utils.SuccessResponse("Node retrieved successfully", node))
 }
 
 // GetNodeByNodeID retrieves a node by its nodeId
@@ -59,84 +63,63 @@ func (h *NodeHandler) GetNodeByNodeID(c echo.Context) error {
 
 	node, err := h.nodeService.GetNodeByNodeID(nodeID)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusNotFound, fmt.Sprintf("Failed to get node: %v", err))
+		return c.JSON(http.StatusNotFound, utils.ErrorResponse(err.Error()))
 	}
 
-	return c.JSON(http.StatusOK, node)
+	return c.JSON(http.StatusOK, utils.SuccessResponse("Node retrieved successfully", node))
 }
 
 // ListNodes retrieves all nodes
 func (h *NodeHandler) ListNodes(c echo.Context) error {
-	limitStr := c.QueryParam("limit")
-	offsetStr := c.QueryParam("offset")
+	pagination := utils.GetPaginationParams(
+		c.QueryParam("limit"),
+		c.QueryParam("offset"),
+		10, // Default limit
+	)
 
-	limit := 10 // default limit
-	if limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
-			limit = l
-		}
-	}
-
-	offset := 0
-	if offsetStr != "" {
-		if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
-			offset = o
-		}
-	}
-
-	nodes, err := h.nodeService.ListNodes(limit, offset)
+	nodes, err := h.nodeService.ListNodes(pagination.Limit, pagination.Offset)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to list nodes: %v", err))
+		return c.JSON(http.StatusInternalServerError, utils.ErrorResponse(err.Error()))
 	}
 
-	response := map[string]interface{}{
-		"nodes": nodes,
-		"count": len(nodes),
-	}
-
-	return c.JSON(http.StatusOK, response)
+	// 표준 리스트 응답 사용
+	listResponse := utils.CreateListResponse(nodes, len(nodes), &pagination)
+	return c.JSON(http.StatusOK, utils.SuccessResponse("Nodes listed successfully", listResponse))
 }
 
 // UpdateNode updates an existing node
 func (h *NodeHandler) UpdateNode(c echo.Context) error {
-	nodeIDStr := c.Param("nodeId")
-
-	nodeID, err := strconv.ParseUint(nodeIDStr, 10, 32)
+	nodeID, err := utils.ParseUintParam(c, "nodeId")
 	if err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, "Invalid node ID")
+		return err
 	}
 
 	var req models.NodeTemplateRequest
-	if err := c.Bind(&req); err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
+	if err := utils.BindAndValidate(c, &req); err != nil {
+		return err
 	}
 
-	node, err := h.nodeService.UpdateNode(uint(nodeID), &req)
+	node, err := h.nodeService.UpdateNode(nodeID, &req)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to update node: %v", err))
+		return c.JSON(http.StatusInternalServerError, utils.ErrorResponse(err.Error()))
 	}
 
-	return c.JSON(http.StatusOK, node)
+	return c.JSON(http.StatusOK, utils.SuccessResponse("Node updated successfully", node))
 }
 
 // DeleteNode deletes a node
 func (h *NodeHandler) DeleteNode(c echo.Context) error {
-	nodeIDStr := c.Param("nodeId")
-
-	nodeID, err := strconv.ParseUint(nodeIDStr, 10, 32)
+	nodeID, err := utils.ParseUintParam(c, "nodeId")
 	if err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, "Invalid node ID")
+		return err
 	}
 
-	err = h.nodeService.DeleteNode(uint(nodeID))
+	err = h.nodeService.DeleteNode(nodeID)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to delete node: %v", err))
+		return c.JSON(http.StatusInternalServerError, utils.ErrorResponse(err.Error()))
 	}
 
-	response := map[string]string{
-		"status":  "success",
-		"message": fmt.Sprintf("Node %d deleted successfully", nodeID),
-	}
-
-	return c.JSON(http.StatusOK, response)
+	// 표준 성공 응답 사용 (데이터 없이 메시지만)
+	msg := fmt.Sprintf("Node %d deleted successfully", nodeID)
+	return c.JSON(http.StatusOK, utils.SuccessResponse(msg, nil))
 }

@@ -23,7 +23,7 @@ import (
 )
 
 func main() {
-	log.Println("🚀 Starting MQTT Bridge Server with Multi-Transport Support (Echo)...")
+	log.Println("🚀 Starting MQTT Bridge Server...")
 
 	// Load Configuration
 	cfg := config.LoadConfig()
@@ -63,16 +63,13 @@ func main() {
 	transportManager.RegisterTransport(transport.TransportTypeMQTT, mqttTransport)
 
 	httpTransport := transport.NewHTTPTransport(30 * time.Second)
-	httpTransport.SetHeader("Authorization", "Bearer robot-api-token")
-	httpTransport.SetHeader("X-Bridge-Version", "v1.0")
-	httpTransport.SetHeader("User-Agent", "MQTT-Bridge/1.0")
 	transportManager.RegisterTransport(transport.TransportTypeHTTP, httpTransport)
 
 	transportManager.SetDefaultTransport(transport.TransportTypeMQTT)
 
 	messageService := services.NewMessageService(messageGenerator, transportManager)
 
-	// Initialize Services with proper repository dependencies
+	// Initialize Services
 	bridgeService := services.NewBridgeService(
 		db.ConnectionRepo,
 		db.FactsheetRepo,
@@ -80,29 +77,12 @@ func main() {
 		redisClient,
 		messageService,
 	)
-
-	// Initialize individual services with repository dependencies
-	orderExecutionService := services.NewOrderExecutionService(
-		db.OrderExecutionRepo,
-		db.OrderTemplateRepo,
-		db.ConnectionRepo,
-		redisClient,
-		mqttClient,
-	)
-
-	orderTemplateService := services.NewOrderTemplateService(
-		db.OrderTemplateRepo,
-		db.ActionRepo,
-	)
-
-	orderService := &services.OrderService{
-		TemplateService:  orderTemplateService,
-		ExecutionService: orderExecutionService,
-	}
-
-	nodeService := services.NewNodeService(db.NodeRepo, db.ActionRepo)
-	edgeService := services.NewEdgeService(db.EdgeRepo, db.ActionRepo)
 	actionService := services.NewActionService(db.ActionRepo)
+	orderExecutionService := services.NewOrderExecutionService(db.OrderExecutionRepo, db.OrderTemplateRepo, db.ConnectionRepo, redisClient, mqttClient)
+	orderTemplateService := services.NewOrderTemplateService(db.OrderTemplateRepo, db.ActionRepo)
+	orderService := &services.OrderService{TemplateService: orderTemplateService, ExecutionService: orderExecutionService}
+	nodeService := services.NewNodeService(db.NodeRepo, actionService)
+	edgeService := services.NewEdgeService(db.EdgeRepo, actionService)
 
 	// Initialize Handlers
 	apiHandler := handlers.NewAPIHandler(bridgeService)
@@ -125,9 +105,8 @@ func main() {
 
 	// Start server
 	go func() {
-		log.Println("🚀 MQTT Bridge Server Started Successfully with Echo!")
+		log.Println("🚀 MQTT Bridge Server Started Successfully!")
 		log.Printf("   • Address: http://localhost:8080")
-		log.Printf("   • Available Transports: %v", transportManager.GetAvailableTransports())
 		log.Printf("   • Default Transport: %s", transportManager.GetDefaultTransport())
 
 		if err := e.Start(":8080"); err != nil && err != http.ErrServerClosed {
@@ -141,22 +120,15 @@ func main() {
 	<-quit
 
 	log.Println("⚠️  Shutdown signal received. Starting graceful shutdown...")
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if err := messageService.Close(); err != nil {
 		log.Printf("⚠️  Error closing message service: %v", err)
-	} else {
-		log.Println("✅ Message service closed successfully")
 	}
-
 	if err := e.Shutdown(ctx); err != nil {
 		log.Printf("⚠️  Echo server shutdown error: %v", err)
-	} else {
-		log.Println("✅ Echo server shut down successfully")
 	}
-
 	log.Println("👋 MQTT Bridge Server stopped gracefully")
 }
 
@@ -173,28 +145,17 @@ func setupRoutes(e *echo.Echo, apiHandler *handlers.APIHandler, orderHandler *ha
 	api.GET("/robots/:serialNumber/capabilities", apiHandler.GetRobotCapabilities)
 	api.GET("/robots/:serialNumber/history", apiHandler.GetRobotConnectionHistory)
 
-	// Basic Robot Control
+	// Basic control APIs now handle optional 'transport' query param
 	api.POST("/robots/:serialNumber/order", apiHandler.SendOrder)
 	api.POST("/robots/:serialNumber/action", apiHandler.SendCustomAction)
 
-	// Multi-Transport Robot Control
-	api.POST("/robots/:serialNumber/order/transport", apiHandler.SendOrderWithTransport)
-	api.POST("/robots/:serialNumber/action/transport", apiHandler.SendCustomActionWithTransport)
-	api.POST("/robots/:serialNumber/order/http", apiHandler.SendOrderViaHTTP)
-	api.POST("/robots/:serialNumber/order/websocket", apiHandler.SendOrderViaWebSocket)
-	api.POST("/robots/:serialNumber/action/http", apiHandler.SendCustomActionViaHTTP)
-
-	// Enhanced Robot Control - Simple
+	// Enhanced control APIs also handle optional 'transport' query param
 	api.POST("/robots/:serialNumber/inference", apiHandler.SendInferenceOrder)
 	api.POST("/robots/:serialNumber/trajectory", apiHandler.SendTrajectoryOrder)
-	api.POST("/robots/:serialNumber/inference/transport", apiHandler.SendInferenceOrderWithTransport)
-	api.POST("/robots/:serialNumber/trajectory/transport", apiHandler.SendTrajectoryOrderWithTransport)
 
-	// Enhanced Robot Control - With Position
+	// APIs with more specific payloads remain as they are
 	api.POST("/robots/:serialNumber/inference/with-position", apiHandler.SendInferenceOrderWithPosition)
 	api.POST("/robots/:serialNumber/trajectory/with-position", apiHandler.SendTrajectoryOrderWithPosition)
-
-	// Enhanced Robot Control - Fully Customizable
 	api.POST("/robots/:serialNumber/inference/custom", apiHandler.SendCustomInferenceOrder)
 	api.POST("/robots/:serialNumber/trajectory/custom", apiHandler.SendCustomTrajectoryOrder)
 	api.POST("/robots/:serialNumber/order/dynamic", apiHandler.SendDynamicOrder)
@@ -211,7 +172,6 @@ func setupRoutes(e *echo.Echo, apiHandler *handlers.APIHandler, orderHandler *ha
 	api.GET("/order-templates/:id/details", orderHandler.GetOrderTemplateWithDetails)
 	api.PUT("/order-templates/:id", orderHandler.UpdateOrderTemplate)
 	api.DELETE("/order-templates/:id", orderHandler.DeleteOrderTemplate)
-
 	api.POST("/order-templates/:id/associate-nodes", orderHandler.AssociateNodes)
 	api.POST("/order-templates/:id/associate-edges", orderHandler.AssociateEdges)
 
@@ -239,7 +199,7 @@ func setupRoutes(e *echo.Echo, apiHandler *handlers.APIHandler, orderHandler *ha
 	api.DELETE("/edges/:edgeId", edgeHandler.DeleteEdge)
 	api.GET("/edges/by-edge-id/:edgeId", edgeHandler.GetEdgeByEdgeID)
 
-	// Action Template Management (Basic)
+	// Action Template Management
 	api.POST("/actions", actionHandler.CreateActionTemplate)
 	api.GET("/actions", actionHandler.ListActionTemplates)
 	api.GET("/actions/:actionId", actionHandler.GetActionTemplate)

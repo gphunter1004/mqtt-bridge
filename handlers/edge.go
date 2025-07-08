@@ -7,6 +7,7 @@ import (
 
 	"mqtt-bridge/models"
 	"mqtt-bridge/services"
+	"mqtt-bridge/utils"
 
 	"github.com/labstack/echo/v4"
 )
@@ -67,24 +68,14 @@ func (h *EdgeHandler) GetEdgeByEdgeID(c echo.Context) error {
 
 // ListEdges retrieves all edges
 func (h *EdgeHandler) ListEdges(c echo.Context) error {
-	limitStr := c.QueryParam("limit")
-	offsetStr := c.QueryParam("offset")
+	// Use the utility function to handle pagination
+	pagination := utils.GetPaginationParams(
+		c.QueryParam("limit"),
+		c.QueryParam("offset"),
+		10, // Default limit
+	)
 
-	limit := 10 // default limit
-	if limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
-			limit = l
-		}
-	}
-
-	offset := 0
-	if offsetStr != "" {
-		if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
-			offset = o
-		}
-	}
-
-	edges, err := h.edgeService.ListEdges(limit, offset)
+	edges, err := h.edgeService.ListEdges(pagination.Limit, pagination.Offset)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to list edges: %v", err))
 	}

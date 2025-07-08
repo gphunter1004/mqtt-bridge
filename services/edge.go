@@ -8,14 +8,14 @@ import (
 )
 
 type EdgeService struct {
-	edgeRepo   interfaces.EdgeRepositoryInterface
-	actionRepo interfaces.ActionRepositoryInterface
+	edgeRepo      interfaces.EdgeRepositoryInterface
+	actionService *ActionService // Changed from actionRepo
 }
 
-func NewEdgeService(edgeRepo interfaces.EdgeRepositoryInterface, actionRepo interfaces.ActionRepositoryInterface) *EdgeService {
+func NewEdgeService(edgeRepo interfaces.EdgeRepositoryInterface, actionService *ActionService) *EdgeService {
 	return &EdgeService{
-		edgeRepo:   edgeRepo,
-		actionRepo: actionRepo,
+		edgeRepo:      edgeRepo,
+		actionService: actionService,
 	}
 }
 
@@ -43,7 +43,7 @@ func (es *EdgeService) CreateEdge(req *models.EdgeTemplateRequest) (*models.Edge
 	// Create action templates and collect their IDs
 	var actionTemplateIDs []uint
 	for _, actionReq := range req.Actions {
-		actionTemplate, err := es.createActionTemplate(&actionReq)
+		actionTemplate, err := es.actionService.CreateActionTemplate(&actionReq)
 		if err != nil {
 			// Log error but continue with other actions
 			continue
@@ -106,11 +106,9 @@ func (es *EdgeService) UpdateEdge(edgeID uint, req *models.EdgeTemplateRequest) 
 	}
 
 	// Delete old action templates
-	if existingEdge.ActionTemplateIDs != "" {
-		oldActionIDs, err := existingEdge.GetActionTemplateIDs()
-		if err == nil && len(oldActionIDs) > 0 {
-			es.deleteActionTemplates(oldActionIDs)
-		}
+	newActionIDs, err := es.actionService.RecreateActionTemplatesForOwner(existingEdge.ActionTemplateIDs, req.Actions)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update action templates for edge: %w", err)
 	}
 
 	// Prepare updated edge template
@@ -124,19 +122,9 @@ func (es *EdgeService) UpdateEdge(edgeID uint, req *models.EdgeTemplateRequest) 
 		EndNodeID:   req.EndNodeID,
 	}
 
-	// Create new action templates
-	var actionTemplateIDs []uint
-	for _, actionReq := range req.Actions {
-		actionTemplate, err := es.createActionTemplate(&actionReq)
-		if err != nil {
-			continue
-		}
-		actionTemplateIDs = append(actionTemplateIDs, actionTemplate.ID)
-	}
-
 	// Set new action template IDs
-	if len(actionTemplateIDs) > 0 {
-		if err := edge.SetActionTemplateIDs(actionTemplateIDs); err != nil {
+	if len(newActionIDs) > 0 {
+		if err := edge.SetActionTemplateIDs(newActionIDs); err != nil {
 			return nil, fmt.Errorf("failed to set action template IDs: %w", err)
 		}
 	}
@@ -147,23 +135,4 @@ func (es *EdgeService) UpdateEdge(edgeID uint, req *models.EdgeTemplateRequest) 
 
 func (es *EdgeService) DeleteEdge(edgeID uint) error {
 	return es.edgeRepo.DeleteEdge(edgeID)
-}
-
-// Private helper methods
-
-func (es *EdgeService) createActionTemplate(actionReq *models.ActionTemplateRequest) (*models.ActionTemplate, error) {
-	action := &models.ActionTemplate{
-		ActionType:        actionReq.ActionType,
-		ActionID:          actionReq.ActionID,
-		BlockingType:      actionReq.BlockingType,
-		ActionDescription: actionReq.ActionDescription,
-	}
-
-	return es.actionRepo.CreateActionTemplate(action, actionReq.Parameters)
-}
-
-func (es *EdgeService) deleteActionTemplates(actionIDs []uint) {
-	for _, actionID := range actionIDs {
-		es.actionRepo.DeleteActionTemplate(actionID)
-	}
 }

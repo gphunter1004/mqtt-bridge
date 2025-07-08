@@ -26,44 +26,28 @@ func (er *EdgeRepository) CreateEdge(edge *models.EdgeTemplate) (*models.EdgeTem
 	if err := er.db.Create(edge).Error; err != nil {
 		return nil, fmt.Errorf("failed to create edge template: %w", err)
 	}
-	return er.GetEdge(edge.ID)
+	return FindByField[models.EdgeTemplate](er.db, "id", edge.ID)
 }
 
 // GetEdge retrieves an edge template by database ID
 func (er *EdgeRepository) GetEdge(edgeID uint) (*models.EdgeTemplate, error) {
-	var edge models.EdgeTemplate
-	err := er.db.Where("id = ?", edgeID).First(&edge).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("edge template with ID %d not found", edgeID)
-		}
-		return nil, fmt.Errorf("failed to get edge template: %w", err)
-	}
-	return &edge, nil
+	// Use the generic helper function
+	return FindByField[models.EdgeTemplate](er.db, "id", edgeID)
 }
 
 // GetEdgeByEdgeID retrieves an edge template by edge ID
 func (er *EdgeRepository) GetEdgeByEdgeID(edgeID string) (*models.EdgeTemplate, error) {
-	var edge models.EdgeTemplate
-	err := er.db.Where("edge_id = ?", edgeID).First(&edge).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("edge template with edge ID '%s' not found", edgeID)
-		}
-		return nil, fmt.Errorf("failed to get edge template: %w", err)
-	}
-	return &edge, nil
+	// Use the generic helper function
+	return FindByField[models.EdgeTemplate](er.db, "edge_id", edgeID)
 }
 
 // GetEdgeWithActions retrieves an edge template with its associated action templates
 func (er *EdgeRepository) GetEdgeWithActions(edgeID uint) (*models.EdgeTemplate, []models.ActionTemplate, error) {
-	// Get the edge template
 	edge, err := er.GetEdge(edgeID)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Get associated action templates
 	actions, err := er.GetActionTemplatesByEdgeID(edgeID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get action templates for edge: %w", err)
@@ -94,12 +78,10 @@ func (er *EdgeRepository) ListEdges(limit, offset int) ([]models.EdgeTemplate, e
 
 // UpdateEdge updates an existing edge template
 func (er *EdgeRepository) UpdateEdge(edgeID uint, edge *models.EdgeTemplate) (*models.EdgeTemplate, error) {
-	// Check if edge exists
 	if _, err := er.GetEdge(edgeID); err != nil {
 		return nil, fmt.Errorf("edge template not found: %w", err)
 	}
 
-	// Check for edgeID conflicts (if edgeID is changing)
 	if edge.EdgeID != "" {
 		exists, err := er.CheckEdgeExistsExcluding(edge.EdgeID, edgeID)
 		if err != nil {
@@ -110,7 +92,6 @@ func (er *EdgeRepository) UpdateEdge(edgeID uint, edge *models.EdgeTemplate) (*m
 		}
 	}
 
-	// Update the edge template
 	updateFields := map[string]interface{}{
 		"edge_id":             edge.EdgeID,
 		"name":                edge.Name,
@@ -132,33 +113,27 @@ func (er *EdgeRepository) UpdateEdge(edgeID uint, edge *models.EdgeTemplate) (*m
 // DeleteEdge deletes an edge template and cleans up associations
 func (er *EdgeRepository) DeleteEdge(edgeID uint) error {
 	return er.db.Transaction(func(tx *gorm.DB) error {
-		// Remove order template associations first
 		if err := tx.Where("edge_template_id = ?", edgeID).Delete(&models.OrderTemplateEdge{}).Error; err != nil {
 			return fmt.Errorf("failed to delete order template associations: %w", err)
 		}
 
-		// Get the edge to access action template IDs
-		edge, err := er.GetEdge(edgeID)
+		edge, err := FindByField[models.EdgeTemplate](tx, "id", edgeID)
 		if err != nil {
 			return fmt.Errorf("failed to get edge for deletion: %w", err)
 		}
 
-		// Delete associated action templates if any
 		if edge.ActionTemplateIDs != "" {
 			actionIDs, err := edge.GetActionTemplateIDs()
 			if err == nil && len(actionIDs) > 0 {
-				// Delete action parameters first
 				if err := tx.Where("action_template_id IN ?", actionIDs).Delete(&models.ActionParameterTemplate{}).Error; err != nil {
 					return fmt.Errorf("failed to delete action parameters: %w", err)
 				}
-				// Delete action templates
 				if err := tx.Where("id IN ?", actionIDs).Delete(&models.ActionTemplate{}).Error; err != nil {
 					return fmt.Errorf("failed to delete action templates: %w", err)
 				}
 			}
 		}
 
-		// Delete the edge template
 		if err := tx.Delete(&models.EdgeTemplate{}, edgeID).Error; err != nil {
 			return fmt.Errorf("failed to delete edge template: %w", err)
 		}
@@ -169,35 +144,23 @@ func (er *EdgeRepository) DeleteEdge(edgeID uint) error {
 
 // CheckEdgeExists checks if an edge with the given edgeID already exists
 func (er *EdgeRepository) CheckEdgeExists(edgeID string) (bool, error) {
-	var count int64
-	err := er.db.Model(&models.EdgeTemplate{}).Where("edge_id = ?", edgeID).Count(&count).Error
-	if err != nil {
-		return false, fmt.Errorf("failed to check edge existence: %w", err)
-	}
-	return count > 0, nil
+	// Use the generic helper function
+	return ExistsByField[models.EdgeTemplate](er.db, "edge_id", edgeID)
 }
 
 // CheckEdgeExistsExcluding checks if an edge exists excluding a specific database ID
 func (er *EdgeRepository) CheckEdgeExistsExcluding(edgeID string, excludeID uint) (bool, error) {
-	var count int64
-	err := er.db.Model(&models.EdgeTemplate{}).
-		Where("edge_id = ? AND id != ?", edgeID, excludeID).
-		Count(&count).Error
-	if err != nil {
-		return false, fmt.Errorf("failed to check edge existence excluding ID: %w", err)
-	}
-	return count > 0, nil
+	// Use the generic helper function
+	return ExistsByFieldExcluding[models.EdgeTemplate](er.db, "edge_id", edgeID, excludeID)
 }
 
 // GetActionTemplatesByEdgeID retrieves action templates associated with an edge
 func (er *EdgeRepository) GetActionTemplatesByEdgeID(edgeID uint) ([]models.ActionTemplate, error) {
-	// Get the edge to access action template IDs
 	edge, err := er.GetEdge(edgeID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse action template IDs from JSON
 	actionIDs, err := edge.GetActionTemplateIDs()
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse action template IDs: %w", err)
@@ -207,11 +170,8 @@ func (er *EdgeRepository) GetActionTemplatesByEdgeID(edgeID uint) ([]models.Acti
 		return []models.ActionTemplate{}, nil
 	}
 
-	// Get action templates
 	var actions []models.ActionTemplate
-	err = er.db.Where("id IN ?", actionIDs).
-		Preload("Parameters").
-		Find(&actions).Error
+	err = er.db.Where("id IN ?", actionIDs).Preload("Parameters").Find(&actions).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get action templates: %w", err)
 	}

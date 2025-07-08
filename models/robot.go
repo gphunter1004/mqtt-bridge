@@ -4,7 +4,36 @@ import (
 	"time"
 )
 
-// Robot Capability Models
+// --- Robot Connection Models ---
+
+// ConnectionState represents the current connection status of a robot.
+type ConnectionState struct {
+	ID              uint      `gorm:"primaryKey" json:"id"`
+	SerialNumber    string    `gorm:"index:idx_serial_state,unique" json:"serialNumber"`
+	ConnectionState string    `json:"connectionState"`
+	HeaderID        int       `json:"headerId"`
+	Timestamp       time.Time `json:"timestamp"`
+	Version         string    `json:"version"`
+	Manufacturer    string    `json:"manufacturer"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
+}
+
+// ConnectionStateHistory stores the history of all connection changes.
+type ConnectionStateHistory struct {
+	ID              uint      `gorm:"primaryKey" json:"id"`
+	SerialNumber    string    `gorm:"index" json:"serialNumber"`
+	ConnectionState string    `json:"connectionState"`
+	HeaderID        int       `json:"headerId"`
+	Timestamp       time.Time `json:"timestamp"`
+	Version         string    `json:"version"`
+	Manufacturer    string    `json:"manufacturer"`
+	CreatedAt       time.Time `json:"createdAt"`
+}
+
+// --- Robot Capability Models ---
+
+// AgvAction defines an action that a robot can perform.
 type AgvAction struct {
 	ID                uint                 `gorm:"primaryKey" json:"id"`
 	SerialNumber      string               `gorm:"index" json:"serialNumber"`
@@ -17,6 +46,7 @@ type AgvAction struct {
 	Parameters        []AgvActionParameter `gorm:"foreignKey:AgvActionID" json:"parameters"`
 }
 
+// AgvActionParameter describes a parameter for an AgvAction.
 type AgvActionParameter struct {
 	ID            uint   `gorm:"primaryKey" json:"id"`
 	AgvActionID   uint   `gorm:"index" json:"agvActionId"`
@@ -26,6 +56,7 @@ type AgvActionParameter struct {
 	ValueDataType string `json:"valueDataType"`
 }
 
+// PhysicalParameter holds the physical specifications of a robot.
 type PhysicalParameter struct {
 	ID              uint      `gorm:"primaryKey" json:"id"`
 	SerialNumber    string    `gorm:"index;unique" json:"serialNumber"`
@@ -41,6 +72,7 @@ type PhysicalParameter struct {
 	UpdatedAt       time.Time `json:"updatedAt"`
 }
 
+// TypeSpecification contains the type and series information of a robot.
 type TypeSpecification struct {
 	ID                uint      `gorm:"primaryKey" json:"id"`
 	SerialNumber      string    `gorm:"index;unique" json:"serialNumber"`

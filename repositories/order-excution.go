@@ -2,10 +2,9 @@ package repositories
 
 import (
 	"fmt"
-	"time"
-
 	"mqtt-bridge/models"
 	"mqtt-bridge/repositories/interfaces"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -32,71 +31,46 @@ func (oer *OrderExecutionRepository) CreateOrderExecution(execution *models.Orde
 
 // GetOrderExecution retrieves an order execution by order ID
 func (oer *OrderExecutionRepository) GetOrderExecution(orderID string) (*models.OrderExecution, error) {
-	var execution models.OrderExecution
-	err := oer.db.Where("order_id = ?", orderID).First(&execution).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("order execution with order ID '%s' not found", orderID)
-		}
-		return nil, fmt.Errorf("failed to get order execution: %w", err)
-	}
-	return &execution, nil
+	// Use the generic helper function
+	return FindByField[models.OrderExecution](oer.db, "order_id", orderID)
 }
 
 // GetOrderExecutionByID retrieves an order execution by database ID
 func (oer *OrderExecutionRepository) GetOrderExecutionByID(id uint) (*models.OrderExecution, error) {
-	var execution models.OrderExecution
-	err := oer.db.Where("id = ?", id).First(&execution).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("order execution with ID %d not found", id)
-		}
-		return nil, fmt.Errorf("failed to get order execution: %w", err)
-	}
-	return &execution, nil
+	// Use the generic helper function
+	return FindByField[models.OrderExecution](oer.db, "id", id)
 }
 
 // ListOrderExecutions retrieves order executions with optional filtering by robot
 func (oer *OrderExecutionRepository) ListOrderExecutions(serialNumber string, limit, offset int) ([]models.OrderExecution, error) {
 	var executions []models.OrderExecution
 	query := oer.db.Order("created_at desc")
-
 	if serialNumber != "" {
 		query = query.Where("serial_number = ?", serialNumber)
 	}
-
 	if limit > 0 {
 		query = query.Limit(limit)
 	}
 	if offset > 0 {
 		query = query.Offset(offset)
 	}
-
 	err := query.Find(&executions).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to list order executions: %w", err)
 	}
-
 	return executions, nil
 }
 
 // UpdateOrderExecution updates an existing order execution
 func (oer *OrderExecutionRepository) UpdateOrderExecution(orderID string, updates map[string]interface{}) error {
-	// Add updated_at timestamp
 	updates["updated_at"] = time.Now()
-
-	result := oer.db.Model(&models.OrderExecution{}).
-		Where("order_id = ?", orderID).
-		Updates(updates)
-
+	result := oer.db.Model(&models.OrderExecution{}).Where("order_id = ?", orderID).Updates(updates)
 	if result.Error != nil {
 		return fmt.Errorf("failed to update order execution: %w", result.Error)
 	}
-
 	if result.RowsAffected == 0 {
 		return fmt.Errorf("order execution with order ID '%s' not found", orderID)
 	}
-
 	return nil
 }
 
@@ -106,22 +80,15 @@ func (oer *OrderExecutionRepository) UpdateOrderStatus(orderID, status string, e
 		"status":     status,
 		"updated_at": time.Now(),
 	}
-
-	// Add error message if provided
 	if len(errorMessage) > 0 && errorMessage[0] != "" {
 		updates["error_message"] = errorMessage[0]
 	}
-
-	// Add completion timestamp for final states
 	if oer.isFinalStatus(status) {
 		updates["completed_at"] = time.Now()
 	}
-
-	// Add started timestamp for executing state
 	if status == "EXECUTING" {
 		updates["started_at"] = time.Now()
 	}
-
 	return oer.UpdateOrderExecution(orderID, updates)
 }
 
@@ -166,11 +133,9 @@ func (oer *OrderExecutionRepository) SetOrderCancelled(orderID string, reason st
 		"completed_at": &now,
 		"updated_at":   now,
 	}
-
 	if reason != "" {
 		updates["error_message"] = reason
 	}
-
 	return oer.UpdateOrderExecution(orderID, updates)
 }
 
@@ -191,61 +156,50 @@ func (oer *OrderExecutionRepository) GetOrderStatus(orderID string) (string, err
 func (oer *OrderExecutionRepository) GetOrdersByStatus(status string, limit, offset int) ([]models.OrderExecution, error) {
 	var executions []models.OrderExecution
 	query := oer.db.Where("status = ?", status).Order("created_at desc")
-
 	if limit > 0 {
 		query = query.Limit(limit)
 	}
 	if offset > 0 {
 		query = query.Offset(offset)
 	}
-
 	err := query.Find(&executions).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get orders by status: %w", err)
 	}
-
 	return executions, nil
 }
 
 // GetOrdersByRobotAndStatus retrieves order executions filtered by robot and status
 func (oer *OrderExecutionRepository) GetOrdersByRobotAndStatus(serialNumber, status string, limit, offset int) ([]models.OrderExecution, error) {
 	var executions []models.OrderExecution
-	query := oer.db.Where("serial_number = ? AND status = ?", serialNumber, status).
-		Order("created_at desc")
-
+	query := oer.db.Where("serial_number = ? AND status = ?", serialNumber, status).Order("created_at desc")
 	if limit > 0 {
 		query = query.Limit(limit)
 	}
 	if offset > 0 {
 		query = query.Offset(offset)
 	}
-
 	err := query.Find(&executions).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get orders by robot and status: %w", err)
 	}
-
 	return executions, nil
 }
 
 // GetOrdersByDateRange retrieves order executions within a date range
 func (oer *OrderExecutionRepository) GetOrdersByDateRange(startDate, endDate time.Time, limit, offset int) ([]models.OrderExecution, error) {
 	var executions []models.OrderExecution
-	query := oer.db.Where("created_at BETWEEN ? AND ?", startDate, endDate).
-		Order("created_at desc")
-
+	query := oer.db.Where("created_at BETWEEN ? AND ?", startDate, endDate).Order("created_at desc")
 	if limit > 0 {
 		query = query.Limit(limit)
 	}
 	if offset > 0 {
 		query = query.Offset(offset)
 	}
-
 	err := query.Find(&executions).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get orders by date range: %w", err)
 	}
-
 	return executions, nil
 }
 
@@ -253,27 +207,21 @@ func (oer *OrderExecutionRepository) GetOrdersByDateRange(startDate, endDate tim
 func (oer *OrderExecutionRepository) GetActiveOrders(serialNumber string) ([]models.OrderExecution, error) {
 	var executions []models.OrderExecution
 	activeStatuses := []string{"CREATED", "SENT", "ACKNOWLEDGED", "EXECUTING"}
-
 	query := oer.db.Where("status IN ?", activeStatuses).Order("created_at desc")
-
 	if serialNumber != "" {
 		query = query.Where("serial_number = ?", serialNumber)
 	}
-
 	err := query.Find(&executions).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get active orders: %w", err)
 	}
-
 	return executions, nil
 }
 
 // CountOrdersByStatus counts order executions by status
 func (oer *OrderExecutionRepository) CountOrdersByStatus(status string) (int64, error) {
 	var count int64
-	err := oer.db.Model(&models.OrderExecution{}).
-		Where("status = ?", status).
-		Count(&count).Error
+	err := oer.db.Model(&models.OrderExecution{}).Where("status = ?", status).Count(&count).Error
 	if err != nil {
 		return 0, fmt.Errorf("failed to count orders by status: %w", err)
 	}
@@ -283,9 +231,7 @@ func (oer *OrderExecutionRepository) CountOrdersByStatus(status string) (int64, 
 // CountOrdersByRobot counts order executions for a specific robot
 func (oer *OrderExecutionRepository) CountOrdersByRobot(serialNumber string) (int64, error) {
 	var count int64
-	err := oer.db.Model(&models.OrderExecution{}).
-		Where("serial_number = ?", serialNumber).
-		Count(&count).Error
+	err := oer.db.Model(&models.OrderExecution{}).Where("serial_number = ?", serialNumber).Count(&count).Error
 	if err != nil {
 		return 0, fmt.Errorf("failed to count orders by robot: %w", err)
 	}
@@ -298,16 +244,13 @@ func (oer *OrderExecutionRepository) DeleteOrderExecution(orderID string) error 
 	if result.Error != nil {
 		return fmt.Errorf("failed to delete order execution: %w", result.Error)
 	}
-
 	if result.RowsAffected == 0 {
 		return fmt.Errorf("order execution with order ID '%s' not found", orderID)
 	}
-
 	return nil
 }
 
 // Private helper methods
-
 func (oer *OrderExecutionRepository) isFinalStatus(status string) bool {
 	finalStatuses := []string{"COMPLETED", "FAILED", "CANCELLED"}
 	for _, finalStatus := range finalStatuses {

@@ -3,9 +3,11 @@ package services
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 
 	"mqtt-bridge/models"
 	"mqtt-bridge/repositories/interfaces"
+	"mqtt-bridge/utils"
 )
 
 type ActionService struct {
@@ -108,4 +110,34 @@ func (as *ActionService) SearchActionTemplates(searchTerm string, limit, offset 
 
 func (as *ActionService) GetActionTemplatesByBlockingType(blockingType string, limit, offset int) ([]models.ActionTemplate, error) {
 	return as.actionRepo.GetActionTemplatesByBlockingType(blockingType, limit, offset)
+}
+
+// ** NEW REFACTORED METHOD **
+// RecreateActionTemplatesForOwner deletes old action templates and creates new ones.
+// It returns the IDs of the newly created action templates.
+func (as *ActionService) RecreateActionTemplatesForOwner(oldActionIDsJSON string, newActions []models.ActionTemplateRequest) ([]uint, error) {
+	// 1. Delete old action templates
+	if oldActionIDsJSON != "" {
+		oldActionIDs, err := utils.ParseJSONToUintSlice(oldActionIDsJSON)
+		if err == nil && len(oldActionIDs) > 0 {
+			for _, actionID := range oldActionIDs {
+				if err := as.actionRepo.DeleteActionTemplate(actionID); err != nil {
+					log.Printf("Warning: failed to delete old action template %d: %v", actionID, err)
+				}
+			}
+		}
+	}
+
+	// 2. Create new action templates
+	var newActionIDs []uint
+	for _, actionReq := range newActions {
+		createdAction, err := as.CreateActionTemplate(&actionReq)
+		if err != nil {
+			log.Printf("Warning: failed to create action template: %v", err)
+			continue // Continue with other actions even if one fails
+		}
+		newActionIDs = append(newActionIDs, createdAction.ID)
+	}
+
+	return newActionIDs, nil
 }
