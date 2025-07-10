@@ -147,6 +147,7 @@ type RobotFactsheet struct {
 	SeriesName        string         `gorm:"size:100" json:"series_name"`
 	SeriesDescription string         `gorm:"size:500" json:"series_description"`
 	AgvClass          string         `gorm:"size:50" json:"agv_class"`
+	AgvKinematics     string         `gorm:"size:50" json:"agv_kinematics"`
 	MaxLoadMass       int            `json:"max_load_mass"`
 	SpeedMax          float64        `json:"speed_max"`
 	SpeedMin          float64        `json:"speed_min"`
@@ -156,6 +157,8 @@ type RobotFactsheet struct {
 	Width             float64        `json:"width"`
 	HeightMax         float64        `json:"height_max"`
 	HeightMin         float64        `json:"height_min"`
+	LocalizationTypes string         `gorm:"size:200" json:"localization_types"` // JSON 배열을 문자열로 저장
+	NavigationTypes   string         `gorm:"size:200" json:"navigation_types"`   // JSON 배열을 문자열로 저장
 	LastUpdated       time.Time      `gorm:"not null" json:"last_updated"`
 	CreatedAt         time.Time      `json:"created_at"`
 	UpdatedAt         time.Time      `json:"updated_at"`

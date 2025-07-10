@@ -246,38 +246,83 @@ MQTT 브릿지 시스템에서 사용되는 모든 토픽과 메시지 정보를
 **Message Format:**
 ```json
 {
-  "headerId": 285,
-  "timestamp": "2025-06-16T19:51:35.123456789Z",
-  "version": "2.0.0",
-  "manufacturer": "Roboligent",
-  "serialNumber": "DEX0002",
   "agvGeometry": {},
+  "headerId": 0,
+  "manufacturer": "Roboligent",
   "physicalParameters": {
-    "AccelerationMax": 1.0,
-    "DecelerationMax": 1.0,
-    "HeightMax": 2.0,
-    "HeightMin": 1.5,
-    "Length": 1.2,
-    "SpeedMax": 2.0,
-    "SpeedMin": 0.1,
-    "Width": 0.8
+    "AccelerationMax": 0.1,
+    "DecelerationMax": 0.1,
+    "HeightMax": 1.704,
+    "HeightMin": 1.304,
+    "Length": 1.0,
+    "SpeedMax": 0.4,
+    "SpeedMin": 0.0,
+    "Width": 1.0
   },
   "protocolFeatures": {
-    "AgvActions": [],
+    "AgvActions": [
+      {
+        "ActionDescription": "This is an action will trigger the behavior tree for executing inference.",
+        "ActionParameters": [
+          {
+            "Description": "Name of the inference",
+            "IsOptional": false,
+            "Key": "inference_name",
+            "ValueDataType": "STRING"
+          }
+        ],
+        "ActionScopes": [
+          "NONE"
+        ],
+        "ActionType": "Roboligent Robin - Inference",
+        "ResultDescription": "NONE"
+      },
+      {
+        "ActionDescription": "This action will trigger the behavior tree for following a recorded trajectory.",
+        "ActionParameters": [
+          {
+            "Description": "Name of the trajectory",
+            "IsOptional": false,
+            "Key": "trajectory_name",
+            "ValueDataType": "STRING"
+          },
+          {
+            "Description": "Arm",
+            "IsOptional": false,
+            "Key": "arm",
+            "ValueDataType": "STRING"
+          }
+        ],
+        "ActionScopes": [
+          "NONE"
+        ],
+        "ActionType": "Roboligent Robin - Follow Trajectory",
+        "ResultDescription": "NONE"
+      }
+    ],
     "OptionalParameters": []
   },
   "protocolLimits": {
-    "VDA5050ProtocolLimits": []
+    "VDA5050ProtocolLimits": [
+      "NONE"
+    ]
   },
+  "serialNumber": "dex",
+  "timestamp": "2025-06-16T19:46:10.961Z",
   "typeSpecification": {
-    "AgvClass": "forklift",
-    "AgvKinematics": "diff",
-    "LocalizationTypes": ["natural"],
-    "MaxLoadMass": 1000,
-    "NavigationTypes": ["physical_line_guided"],
-    "SeriesDescription": "Automated Guided Vehicle",
+    "AgvClass": "AMR",
+    "AgvKinematics": "ForwardKinematics",
+    "LocalizationTypes": [
+      "ODOMETRY"
+    ],
+    "MaxLoadMass": 50,
+    "NavigationTypes": [
+      "AUTONOMOUS"
+    ],
+    "SeriesDescription": "Humanoid robot with dual manipulators. Note: Fact-sheet is incomplete.",
     "SeriesName": "Robin"
-  }
+  },
+  "version": "1.0"
 }
 ```
 
@@ -353,11 +398,14 @@ PLC에서 받은 명령 정보를 저장
 - `manufacturer` - 제조사
 - `version` - 버전
 - `series_name`, `series_description` - 시리즈 정보
-- `agv_class` - AGV 클래스
+- `agv_class` - AGV 클래스 (예: AMR)
+- `agv_kinematics` - AGV 키네마틱스 (예: ForwardKinematics)
 - `max_load_mass` - 최대 적재 질량
 - `speed_max`, `speed_min` - 속도 정보
 - `acceleration_max`, `deceleration_max` - 가속도 정보
 - `length`, `width`, `height_max`, `height_min` - 크기 정보
+- `localization_types` - 로컬라이제이션 타입 (JSON 배열)
+- `navigation_types` - 내비게이션 타입 (JSON 배열)
 - `last_updated` - 마지막 업데이트
 
 **관련 토픽:**

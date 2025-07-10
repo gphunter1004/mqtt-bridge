@@ -137,6 +137,10 @@ func (h *PositionHandler) saveFactsheet(resp *models.FactsheetResponse) {
 		timestamp = time.Now()
 	}
 
+	// 배열을 JSON 문자열로 변환
+	localizationTypesJSON, _ := json.Marshal(resp.TypeSpecification.LocalizationTypes)
+	navigationTypesJSON, _ := json.Marshal(resp.TypeSpecification.NavigationTypes)
+
 	factsheet := &models.RobotFactsheet{
 		SerialNumber:      resp.SerialNumber,
 		Manufacturer:      resp.Manufacturer,
@@ -144,6 +148,7 @@ func (h *PositionHandler) saveFactsheet(resp *models.FactsheetResponse) {
 		SeriesName:        resp.TypeSpecification.SeriesName,
 		SeriesDescription: resp.TypeSpecification.SeriesDescription,
 		AgvClass:          resp.TypeSpecification.AgvClass,
+		AgvKinematics:     resp.TypeSpecification.AgvKinematics,
 		MaxLoadMass:       resp.TypeSpecification.MaxLoadMass,
 		SpeedMax:          resp.PhysicalParameters.SpeedMax,
 		SpeedMin:          resp.PhysicalParameters.SpeedMin,
@@ -153,6 +158,8 @@ func (h *PositionHandler) saveFactsheet(resp *models.FactsheetResponse) {
 		Width:             resp.PhysicalParameters.Width,
 		HeightMax:         resp.PhysicalParameters.HeightMax,
 		HeightMin:         resp.PhysicalParameters.HeightMin,
+		LocalizationTypes: string(localizationTypesJSON),
+		NavigationTypes:   string(navigationTypesJSON),
 		LastUpdated:       timestamp,
 	}
 
@@ -165,14 +172,18 @@ func (h *PositionHandler) saveFactsheet(resp *models.FactsheetResponse) {
 		if err := h.db.Create(factsheet).Error; err != nil {
 			utils.Logger.Errorf("Failed to create factsheet: %v", err)
 		} else {
-			utils.Logger.Infof("Factsheet created for robot: %s", resp.SerialNumber)
+			utils.Logger.Infof("Factsheet created for robot: %s (Series: %s, Class: %s, Kinematics: %s)",
+				resp.SerialNumber, resp.TypeSpecification.SeriesName,
+				resp.TypeSpecification.AgvClass, resp.TypeSpecification.AgvKinematics)
 		}
 	} else if result.Error == nil {
 		// 기존 업데이트
 		if err := h.db.Model(&existing).Updates(factsheet).Error; err != nil {
 			utils.Logger.Errorf("Failed to update factsheet: %v", err)
 		} else {
-			utils.Logger.Infof("Factsheet updated for robot: %s", resp.SerialNumber)
+			utils.Logger.Infof("Factsheet updated for robot: %s (Series: %s, Class: %s, Kinematics: %s)",
+				resp.SerialNumber, resp.TypeSpecification.SeriesName,
+				resp.TypeSpecification.AgvClass, resp.TypeSpecification.AgvKinematics)
 		}
 	} else {
 		utils.Logger.Errorf("Database error: %v", result.Error)
