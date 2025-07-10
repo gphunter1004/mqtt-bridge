@@ -32,16 +32,26 @@ func NewPositionHandler(db *gorm.DB, redisClient *redis.Client, mqttClient mqtt.
 	}
 }
 
-// CheckAndRequestInitPosition 위치 초기화 필요 시 자동 요청
+// CheckAndRequestInitPosition 위치 초기화 필요 시 자동 요청 (panic 방어)
 func (h *PositionHandler) CheckAndRequestInitPosition(stateMsg *models.RobotStateMessage) {
+	if stateMsg == nil {
+		utils.Logger.Errorf("State message is nil")
+		return
+	}
+
 	// 이미 초기화되었으면 무시
 	if stateMsg.AgvPosition.PositionInitialized {
 		return
 	}
 
 	// 자동 모드에서만 처리
-	if stateMsg.OperatingMode != models.OperatingModeAutomatic {
-		utils.Logger.Debugf("Robot %s not in automatic mode, skipping initPosition", stateMsg.SerialNumber)
+	operatingMode := stateMsg.OperatingMode
+	if operatingMode == "" {
+		operatingMode = "UNKNOWN"
+	}
+
+	if operatingMode != models.OperatingModeAutomatic {
+		utils.Logger.Debugf("Robot %s not in automatic mode (%s), skipping initPosition", stateMsg.SerialNumber, operatingMode)
 		return
 	}
 
@@ -52,21 +62,44 @@ func (h *PositionHandler) CheckAndRequestInitPosition(stateMsg *models.RobotStat
 	}
 }
 
-// sendInitPositionRequest initPosition 요청 전송
+// sendInitPositionRequest initPosition 요청 전송 (panic 방어)
 func (h *PositionHandler) sendInitPositionRequest(stateMsg *models.RobotStateMessage) error {
+	if stateMsg == nil {
+		return fmt.Errorf("state message is nil")
+	}
+
 	actionID := h.generateUniqueID()
 
-	// 현재 위치를 기준으로 초기 위치 설정
+	// 안전한 필드 접근
+	safeString := func(val string) string {
+		if val == "" {
+			return ""
+		}
+		return val
+	}
+
+	safeFloat := func(val float64) float64 {
+		if val != val { // NaN 체크
+			return 0.0
+		}
+		return val
+	}
+
+	// 현재 위치를 기준으로 초기 위치 설정 (안전한 접근)
 	pose := map[string]interface{}{
 		"lastNodeId": "",
-		"mapId":      stateMsg.AgvPosition.MapID,
-		"theta":      stateMsg.AgvPosition.Theta,
-		"x":          stateMsg.AgvPosition.X,
-		"y":          stateMsg.AgvPosition.Y,
+		"mapId":      safeString(stateMsg.AgvPosition.MapID),
+		"theta":      safeFloat(stateMsg.AgvPosition.Theta),
+		"x":          safeFloat(stateMsg.AgvPosition.X),
+		"y":          safeFloat(stateMsg.AgvPosition.Y),
 	}
 
 	// 위치가 모두 0이면 원점 사용
-	if stateMsg.AgvPosition.X == 0 && stateMsg.AgvPosition.Y == 0 && stateMsg.AgvPosition.Theta == 0 {
+	x := safeFloat(stateMsg.AgvPosition.X)
+	y := safeFloat(stateMsg.AgvPosition.Y)
+	theta := safeFloat(stateMsg.AgvPosition.Theta)
+
+	if x == 0 && y == 0 && theta == 0 {
 		pose["x"] = 0.0
 		pose["y"] = 0.0
 		pose["theta"] = 0.0
@@ -78,8 +111,8 @@ func (h *PositionHandler) sendInitPositionRequest(stateMsg *models.RobotStateMes
 		"headerId":     time.Now().Unix(),
 		"timestamp":    time.Now().Format(time.RFC3339Nano),
 		"version":      "2.0.0",
-		"manufacturer": stateMsg.Manufacturer,
-		"serialNumber": stateMsg.SerialNumber,
+		"manufacturer": safeString(stateMsg.Manufacturer),
+		"serialNumber": safeString(stateMsg.SerialNumber),
 		"actions": []map[string]interface{}{
 			{
 				"actionType":   "initPosition",
@@ -102,7 +135,14 @@ func (h *PositionHandler) sendInitPositionRequest(stateMsg *models.RobotStateMes
 	}
 
 	// MQTT 토픽 생성 및 전송
-	topic := fmt.Sprintf("meili/v2/%s/%s/instantActions", stateMsg.Manufacturer, stateMsg.SerialNumber)
+	manufacturer := safeString(stateMsg.Manufacturer)
+	serialNumber := safeString(stateMsg.SerialNumber)
+
+	if manufacturer == "" || serialNumber == "" {
+		return fmt.Errorf("invalid manufacturer or serial number")
+	}
+
+	topic := fmt.Sprintf("meili/v2/%s/%s/instantActions", manufacturer, serialNumber)
 
 	utils.Logger.Infof("Sending initPosition request to %s (ActionID: %s)", topic, actionID)
 	utils.Logger.Debugf("Request payload: %s", string(reqData))
@@ -112,7 +152,7 @@ func (h *PositionHandler) sendInitPositionRequest(stateMsg *models.RobotStateMes
 		return fmt.Errorf("MQTT publish failed: %v", token.Error())
 	}
 
-	utils.Logger.Infof("InitPosition request sent successfully to robot: %s", stateMsg.SerialNumber)
+	utils.Logger.Infof("InitPosition request sent successfully to robot: %s", serialNumber)
 	return nil
 }
 
@@ -132,32 +172,99 @@ func (h *PositionHandler) HandleFactsheet(client mqtt.Client, msg mqtt.Message) 
 
 // saveFactsheet 팩트시트 저장
 func (h *PositionHandler) saveFactsheet(resp *models.FactsheetResponse) {
+	if resp == nil {
+		utils.Logger.Errorf("Factsheet response is nil")
+		return
+	}
+
 	timestamp, _ := time.Parse(time.RFC3339, resp.Timestamp)
 	if timestamp.IsZero() {
 		timestamp = time.Now()
 	}
 
-	// 배열을 JSON 문자열로 변환
-	localizationTypesJSON, _ := json.Marshal(resp.TypeSpecification.LocalizationTypes)
-	navigationTypesJSON, _ := json.Marshal(resp.TypeSpecification.NavigationTypes)
+	// 안전한 필드 접근을 위한 헬퍼 함수들
+	getStringField := func(field string) string {
+		if field == "" {
+			return "unknown"
+		}
+		return field
+	}
+
+	getIntField := func(field int) int {
+		if field < 0 {
+			return 0
+		}
+		return field
+	}
+
+	getFloatField := func(field float64) float64 {
+		if field < 0 {
+			return 0.0
+		}
+		return field
+	}
+
+	// TypeSpecification 안전 접근
+	var seriesName, seriesDescription, agvClass, agvKinematics string
+	var maxLoadMass int
+	var localizationTypesJSON, navigationTypesJSON []byte
+
+	if resp.TypeSpecification.SeriesName != "" {
+		seriesName = resp.TypeSpecification.SeriesName
+	} else {
+		seriesName = "Unknown"
+	}
+
+	if resp.TypeSpecification.SeriesDescription != "" {
+		seriesDescription = resp.TypeSpecification.SeriesDescription
+	} else {
+		seriesDescription = "No description available"
+	}
+
+	agvClass = getStringField(resp.TypeSpecification.AgvClass)
+	agvKinematics = getStringField(resp.TypeSpecification.AgvKinematics)
+	maxLoadMass = getIntField(resp.TypeSpecification.MaxLoadMass)
+
+	// 배열 필드 안전 처리
+	if len(resp.TypeSpecification.LocalizationTypes) > 0 {
+		localizationTypesJSON, _ = json.Marshal(resp.TypeSpecification.LocalizationTypes)
+	} else {
+		localizationTypesJSON = []byte("[]")
+	}
+
+	if len(resp.TypeSpecification.NavigationTypes) > 0 {
+		navigationTypesJSON, _ = json.Marshal(resp.TypeSpecification.NavigationTypes)
+	} else {
+		navigationTypesJSON = []byte("[]")
+	}
+
+	// PhysicalParameters 안전 접근
+	speedMax := getFloatField(resp.PhysicalParameters.SpeedMax)
+	speedMin := getFloatField(resp.PhysicalParameters.SpeedMin)
+	accelerationMax := getFloatField(resp.PhysicalParameters.AccelerationMax)
+	decelerationMax := getFloatField(resp.PhysicalParameters.DecelerationMax)
+	length := getFloatField(resp.PhysicalParameters.Length)
+	width := getFloatField(resp.PhysicalParameters.Width)
+	heightMax := getFloatField(resp.PhysicalParameters.HeightMax)
+	heightMin := getFloatField(resp.PhysicalParameters.HeightMin)
 
 	factsheet := &models.RobotFactsheet{
-		SerialNumber:      resp.SerialNumber,
-		Manufacturer:      resp.Manufacturer,
-		Version:           resp.Version,
-		SeriesName:        resp.TypeSpecification.SeriesName,
-		SeriesDescription: resp.TypeSpecification.SeriesDescription,
-		AgvClass:          resp.TypeSpecification.AgvClass,
-		AgvKinematics:     resp.TypeSpecification.AgvKinematics,
-		MaxLoadMass:       resp.TypeSpecification.MaxLoadMass,
-		SpeedMax:          resp.PhysicalParameters.SpeedMax,
-		SpeedMin:          resp.PhysicalParameters.SpeedMin,
-		AccelerationMax:   resp.PhysicalParameters.AccelerationMax,
-		DecelerationMax:   resp.PhysicalParameters.DecelerationMax,
-		Length:            resp.PhysicalParameters.Length,
-		Width:             resp.PhysicalParameters.Width,
-		HeightMax:         resp.PhysicalParameters.HeightMax,
-		HeightMin:         resp.PhysicalParameters.HeightMin,
+		SerialNumber:      getStringField(resp.SerialNumber),
+		Manufacturer:      getStringField(resp.Manufacturer),
+		Version:           getStringField(resp.Version),
+		SeriesName:        seriesName,
+		SeriesDescription: seriesDescription,
+		AgvClass:          agvClass,
+		AgvKinematics:     agvKinematics,
+		MaxLoadMass:       maxLoadMass,
+		SpeedMax:          speedMax,
+		SpeedMin:          speedMin,
+		AccelerationMax:   accelerationMax,
+		DecelerationMax:   decelerationMax,
+		Length:            length,
+		Width:             width,
+		HeightMax:         heightMax,
+		HeightMin:         heightMin,
 		LocalizationTypes: string(localizationTypesJSON),
 		NavigationTypes:   string(navigationTypesJSON),
 		LastUpdated:       timestamp,
@@ -173,8 +280,8 @@ func (h *PositionHandler) saveFactsheet(resp *models.FactsheetResponse) {
 			utils.Logger.Errorf("Failed to create factsheet: %v", err)
 		} else {
 			utils.Logger.Infof("Factsheet created for robot: %s (Series: %s, Class: %s, Kinematics: %s)",
-				resp.SerialNumber, resp.TypeSpecification.SeriesName,
-				resp.TypeSpecification.AgvClass, resp.TypeSpecification.AgvKinematics)
+				factsheet.SerialNumber, factsheet.SeriesName,
+				factsheet.AgvClass, factsheet.AgvKinematics)
 		}
 	} else if result.Error == nil {
 		// 기존 업데이트
@@ -182,8 +289,8 @@ func (h *PositionHandler) saveFactsheet(resp *models.FactsheetResponse) {
 			utils.Logger.Errorf("Failed to update factsheet: %v", err)
 		} else {
 			utils.Logger.Infof("Factsheet updated for robot: %s (Series: %s, Class: %s, Kinematics: %s)",
-				resp.SerialNumber, resp.TypeSpecification.SeriesName,
-				resp.TypeSpecification.AgvClass, resp.TypeSpecification.AgvKinematics)
+				factsheet.SerialNumber, factsheet.SeriesName,
+				factsheet.AgvClass, factsheet.AgvKinematics)
 		}
 	} else {
 		utils.Logger.Errorf("Database error: %v", result.Error)

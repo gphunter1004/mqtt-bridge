@@ -195,36 +195,60 @@ func (h *RobotHandler) handleConnectionStateChange(connMsg *models.ConnectionSta
 	}
 }
 
-// handleCriticalStates 중요한 상태 변경 처리
+// handleCriticalStates 중요한 상태 변경 처리 (panic 방어)
 func (h *RobotHandler) handleCriticalStates(stateMsg *models.RobotStateMessage) {
-	// E-Stop 확인
-	if stateMsg.SafetyState.EStop != models.EStopNone {
-		utils.Logger.Warnf("Robot %s E-Stop activated: %s", stateMsg.SerialNumber, stateMsg.SafetyState.EStop)
-		h.commandHandler.FailProcessingCommands(fmt.Sprintf("E-Stop activated: %s", stateMsg.SafetyState.EStop))
+	if stateMsg == nil {
+		utils.Logger.Errorf("State message is nil")
+		return
 	}
 
-	// 크리티컬 에러 확인
-	for _, errorInfo := range stateMsg.Errors {
-		if errorInfo.ErrorLevel == "FATAL" || errorInfo.ErrorLevel == "ERROR" {
-			utils.Logger.Errorf("Robot %s critical error: %s - %s",
-				stateMsg.SerialNumber, errorInfo.ErrorType, errorInfo.ErrorDescription)
-			h.commandHandler.FailProcessingCommands(fmt.Sprintf("Robot error: %s", errorInfo.ErrorType))
-			break // 첫 번째 크리티컬 에러만 처리
+	// E-Stop 확인 (SafetyState 안전 접근)
+	eStopStatus := models.EStopNone
+	if stateMsg.SafetyState.EStop != "" {
+		eStopStatus = stateMsg.SafetyState.EStop
+	}
+
+	if eStopStatus != models.EStopNone {
+		utils.Logger.Warnf("Robot %s E-Stop activated: %s", stateMsg.SerialNumber, eStopStatus)
+		h.commandHandler.FailProcessingCommands(fmt.Sprintf("E-Stop activated: %s", eStopStatus))
+	}
+
+	// 크리티컬 에러 확인 (Errors 배열 안전 접근)
+	if stateMsg.Errors != nil && len(stateMsg.Errors) > 0 {
+		for _, errorInfo := range stateMsg.Errors {
+			if errorInfo.ErrorLevel == "FATAL" || errorInfo.ErrorLevel == "ERROR" {
+				utils.Logger.Errorf("Robot %s critical error: %s - %s",
+					stateMsg.SerialNumber, errorInfo.ErrorType, errorInfo.ErrorDescription)
+				h.commandHandler.FailProcessingCommands(fmt.Sprintf("Robot error: %s", errorInfo.ErrorType))
+				break // 첫 번째 크리티컬 에러만 처리
+			}
 		}
 	}
 
-	// 크리티컬 저배터리 확인
-	if stateMsg.BatteryState.BatteryCharge < 5.0 && !stateMsg.BatteryState.Charging {
-		utils.Logger.Errorf("Robot %s critical low battery: %.1f%%", stateMsg.SerialNumber, stateMsg.BatteryState.BatteryCharge)
-		h.commandHandler.FailProcessingCommands(fmt.Sprintf("Critical low battery: %.1f%%", stateMsg.BatteryState.BatteryCharge))
+	// 크리티컬 저배터리 확인 (BatteryState 안전 접근)
+	batteryCharge := 100.0 // 기본값
+	charging := false
+
+	if stateMsg.BatteryState.BatteryCharge >= 0 {
+		batteryCharge = stateMsg.BatteryState.BatteryCharge
+	}
+	charging = stateMsg.BatteryState.Charging
+
+	if batteryCharge < 5.0 && !charging {
+		utils.Logger.Errorf("Robot %s critical low battery: %.1f%%", stateMsg.SerialNumber, batteryCharge)
+		h.commandHandler.FailProcessingCommands(fmt.Sprintf("Critical low battery: %.1f%%", batteryCharge))
 	}
 
-	// cancelOrder 액션 상태 확인
+	// cancelOrder 액션 상태 확인 (ActionStates 배열 안전 접근)
 	h.checkCancelOrderActions(stateMsg)
 }
 
-// checkCancelOrderActions cancelOrder 액션 상태 확인
+// checkCancelOrderActions cancelOrder 액션 상태 확인 (panic 방어)
 func (h *RobotHandler) checkCancelOrderActions(stateMsg *models.RobotStateMessage) {
+	if stateMsg == nil || stateMsg.ActionStates == nil {
+		return
+	}
+
 	for _, actionState := range stateMsg.ActionStates {
 		if actionState.ActionType == "cancelOrder" {
 			utils.Logger.Infof("Robot %s cancelOrder action - ID: %s, Status: %s",
