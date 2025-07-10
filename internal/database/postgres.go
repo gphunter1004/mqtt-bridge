@@ -1,3 +1,4 @@
+// internal/database/postgres.go
 package database
 
 import (
@@ -18,8 +19,13 @@ func NewPostgresDB(cfg *config.Config) (*gorm.DB, error) {
 		return nil, err
 	}
 
-	// 테이블 마이그레이션 (Command, RobotStatus, RobotFactsheet 테이블)
-	if err := db.AutoMigrate(&models.Command{}, &models.RobotStatus{}, &models.RobotFactsheet{}); err != nil {
+	// 테이블 마이그레이션 (핵심 테이블만)
+	if err := db.AutoMigrate(
+		&models.Command{},        // PLC 명령 정보
+		&models.RobotStatus{},    // 로봇 연결 상태 정보
+		&models.RobotFactsheet{}, // 로봇 팩트시트 정보
+		&models.RobotState{},     // 로봇 운영 상태 정보
+	); err != nil {
 		return nil, err
 	}
 
