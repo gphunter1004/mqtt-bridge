@@ -1,4 +1,0 @@
-.env
-./logs
-*.log
-go.sum
