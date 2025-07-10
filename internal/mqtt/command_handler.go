@@ -2,6 +2,10 @@
 package mqtt
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"mqtt-bridge/internal/config"
 	"mqtt-bridge/internal/models"
 	"mqtt-bridge/internal/utils"
@@ -38,6 +42,12 @@ func (h *CommandHandler) HandleCommand(client mqtt.Client, msg mqtt.Message) {
 	// 명령 유효성 검사
 	if !models.IsValidCommand(commandType) {
 		utils.Logger.Errorf("Invalid command received: %s", commandType)
+		return
+	}
+
+	// orderCancel 명령은 별도 처리
+	if commandType == models.CommandOrderCancel {
+		h.handleOrderCancelCommand()
 		return
 	}
 
@@ -145,6 +155,8 @@ func (h *CommandHandler) determineCommandResult(commandType string) string {
 		return models.StatusSuccess
 	case models.CommandGripperCleaning, models.CommandCameraCleaning, models.CommandKnifeCleaning:
 		return models.StatusSuccess
+	case models.CommandOrderCancel:
+		return models.StatusSuccess // orderCancel은 항상 성공
 	case models.CommandCameraCheck:
 		// 시뮬레이션: 80% 확률로 정상
 		if time.Now().Unix()%5 != 0 {
@@ -200,4 +212,89 @@ func (h *CommandHandler) FailProcessingCommands(reason string) {
 		h.failCommand(&command, reason)
 		utils.Logger.Warnf("Command %d failed due to: %s", command.ID, reason)
 	}
+}
+
+// handleOrderCancelCommand orderCancel 명령 처리
+func (h *CommandHandler) handleOrderCancelCommand() {
+	utils.Logger.Infof("Processing orderCancel command (OC)")
+
+	// orderCancel 명령을 DB에 기록
+	command := &models.Command{
+		CommandType: models.CommandOrderCancel,
+		Status:      models.StatusProcessing,
+		RequestTime: time.Now(),
+	}
+
+	if err := h.db.Create(command).Error; err != nil {
+		utils.Logger.Errorf("Failed to save orderCancel command: %v", err)
+		h.sendResponseToPLC("OC:F") // 실패 응답
+		return
+	}
+
+	// 로봇에 cancelOrder 요청 전송
+	robotSerial := h.config.RobotSerialNumber
+	robotManufacturer := h.config.RobotManufacturer
+
+	if err := h.sendCancelOrderToRobot(command, robotSerial, robotManufacturer); err != nil {
+		utils.Logger.Errorf("Failed to send cancelOrder to robot: %v", err)
+		h.failCommand(command, fmt.Sprintf("Failed to send cancelOrder: %v", err))
+		return
+	}
+
+	// 성공 응답을 PLC에 전송
+	command.Status = models.StatusSuccess
+	now := time.Now()
+	command.ResponseTime = &now
+	h.updateCommand(command)
+
+	h.sendResponseToPLC("OC:S") // 성공 응답
+	utils.Logger.Infof("OrderCancel command completed successfully (Command ID: %d)", command.ID)
+}
+
+// sendCancelOrderToRobot 로봇에 cancelOrder 요청 전송
+func (h *CommandHandler) sendCancelOrderToRobot(command *models.Command, serialNumber, manufacturer string) error {
+	actionID := h.generateActionID()
+
+	request := map[string]interface{}{
+		"headerId":     time.Now().Unix(),
+		"timestamp":    time.Now().Format(time.RFC3339Nano),
+		"version":      "2.0.0",
+		"manufacturer": manufacturer,
+		"serialNumber": serialNumber,
+		"actions": []map[string]interface{}{
+			{
+				"actionType":       "cancelOrder",
+				"actionId":         actionID,
+				"blockingType":     "HARD",
+				"actionParameters": []map[string]interface{}{},
+			},
+		},
+	}
+
+	reqData, err := json.Marshal(request)
+	if err != nil {
+		return fmt.Errorf("failed to marshal cancelOrder request: %v", err)
+	}
+
+	topic := fmt.Sprintf("meili/v2/%s/%s/instantActions", manufacturer, serialNumber)
+
+	utils.Logger.Infof("Sending cancelOrder request to %s (ActionID: %s)", topic, actionID)
+	utils.Logger.Debugf("CancelOrder request payload: %s", string(reqData))
+
+	token := h.mqttClient.Publish(topic, 0, false, reqData)
+	if token.Wait() && token.Error() != nil {
+		return fmt.Errorf("MQTT publish failed: %v", token.Error())
+	}
+
+	utils.Logger.Infof("CancelOrder request sent successfully to robot: %s (ActionID: %s)", serialNumber, actionID)
+	return nil
+}
+
+// generateActionID 액션 ID 생성
+func (h *CommandHandler) generateActionID() string {
+	randomBytes := make([]byte, 16)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return fmt.Sprintf("action_%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%s_%d", hex.EncodeToString(randomBytes), time.Now().UnixNano())
 }

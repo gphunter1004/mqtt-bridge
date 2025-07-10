@@ -1,3 +1,4 @@
+// internal/models/command.go
 package models
 
 import (
@@ -161,16 +162,19 @@ type RobotFactsheet struct {
 	DeletedAt         gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 }
 
+// 명령 타입 상수
 const (
-	// 명령 타입
 	CommandCataractRemoval = "CR" // 백내장 적출
 	CommandGlaucomaRemoval = "GR" // 적내장 적출
 	CommandGripperCleaning = "GC" // 그리퍼 세정
 	CommandCameraCheck     = "CC" // 카메라 확인
 	CommandCameraCleaning  = "CL" // 카메라 세정
 	CommandKnifeCleaning   = "KC" // 나이프 세정
+	CommandOrderCancel     = "OC" // 명령 취소
+)
 
-	// 상태
+// 상태 상수
+const (
 	StatusPending    = "PENDING"
 	StatusProcessing = "PROCESSING"
 	StatusSuccess    = "SUCCESS"
@@ -178,8 +182,10 @@ const (
 	StatusAbnormal   = "ABNORMAL"
 	StatusNormal     = "NORMAL"
 	StatusRejected   = "REJECTED" // 실행 중인 명령이 있어서 거부됨
+)
 
-	// 로봇 연결 상태
+// 로봇 연결 상태 상수
+const (
 	ConnectionStateOnline           = "ONLINE"
 	ConnectionStateOffline          = "OFFLINE"
 	ConnectionStateConnectionBroken = "CONNECTIONBROKEN"
@@ -212,6 +218,7 @@ func IsValidCommand(cmd string) bool {
 		CommandCameraCheck,
 		CommandCameraCleaning,
 		CommandKnifeCleaning,
+		CommandOrderCancel,
 	}
 
 	for _, validCmd := range validCommands {

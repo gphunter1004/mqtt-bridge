@@ -218,6 +218,28 @@ func (h *RobotHandler) handleCriticalStates(stateMsg *models.RobotStateMessage) 
 		utils.Logger.Errorf("Robot %s critical low battery: %.1f%%", stateMsg.SerialNumber, stateMsg.BatteryState.BatteryCharge)
 		h.commandHandler.FailProcessingCommands(fmt.Sprintf("Critical low battery: %.1f%%", stateMsg.BatteryState.BatteryCharge))
 	}
+
+	// cancelOrder 액션 상태 확인
+	h.checkCancelOrderActions(stateMsg)
+}
+
+// checkCancelOrderActions cancelOrder 액션 상태 확인
+func (h *RobotHandler) checkCancelOrderActions(stateMsg *models.RobotStateMessage) {
+	for _, actionState := range stateMsg.ActionStates {
+		if actionState.ActionType == "cancelOrder" {
+			utils.Logger.Infof("Robot %s cancelOrder action - ID: %s, Status: %s",
+				stateMsg.SerialNumber, actionState.ActionID, actionState.ActionStatus)
+
+			// cancelOrder 완료 시 로그 기록
+			if actionState.ActionStatus == models.ActionStatusFinished {
+				utils.Logger.Infof("Robot %s cancelOrder completed successfully - ActionID: %s",
+					stateMsg.SerialNumber, actionState.ActionID)
+			} else if actionState.ActionStatus == models.ActionStatusFailed {
+				utils.Logger.Errorf("Robot %s cancelOrder failed - ActionID: %s, Description: %s",
+					stateMsg.SerialNumber, actionState.ActionID, actionState.ResultDescription)
+			}
+		}
+	}
 }
 
 // parseTimestamp 타임스탬프 파싱
