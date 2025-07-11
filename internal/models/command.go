@@ -1,4 +1,4 @@
-// internal/models/command.go (수정된 버전 - 중복 제거)
+// internal/models/command.go (수정된 최종 버전)
 package models
 
 import (
@@ -7,17 +7,31 @@ import (
 	"gorm.io/gorm"
 )
 
-// Command PLC에서 받은 명령 정보
+// CommandDefinition PLC에서 사용 가능한 모든 명령어를 정의하는 테이블
+type CommandDefinition struct {
+	ID          uint           `gorm:"primaryKey" json:"id"`
+	CommandType string         `gorm:"size:10;not null;uniqueIndex" json:"command_type"` // "CR", "GR" 등 PLC에서 사용하는 고유 코드
+	Description string         `gorm:"size:255" json:"description"`                      // "백내장 적출", "그리퍼 세정" 등
+	IsActive    bool           `gorm:"default:true" json:"is_active"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
+	DeletedAt   gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+}
+
+// Command PLC에서 요청된 명령의 실행 이력을 기록하는 로그 테이블
 type Command struct {
-	ID           uint           `gorm:"primaryKey" json:"id"`
-	CommandType  string         `gorm:"size:10;not null" json:"command_type"`
-	Status       string         `gorm:"size:20;not null" json:"status"`
-	RequestTime  time.Time      `gorm:"not null" json:"request_time"`
-	ResponseTime *time.Time     `json:"response_time"`
-	ErrorMessage string         `gorm:"size:500" json:"error_message"`
-	CreatedAt    time.Time      `json:"created_at"`
-	UpdatedAt    time.Time      `json:"updated_at"`
-	DeletedAt    gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+	ID                  uint           `gorm:"primaryKey" json:"id"`
+	CommandDefinitionID uint           `gorm:"not null;index" json:"command_definition_id"` // command_definitions 테이블 외래 키
+	Status              string         `gorm:"size:20;not null" json:"status"`
+	RequestTime         time.Time      `gorm:"not null" json:"request_time"`
+	ResponseTime        *time.Time     `json:"response_time"`
+	ErrorMessage        string         `gorm:"size:500" json:"error_message"`
+	CreatedAt           time.Time      `json:"created_at"`
+	UpdatedAt           time.Time      `json:"updated_at"`
+	DeletedAt           gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+
+	// 관계 설정
+	CommandDefinition CommandDefinition `gorm:"foreignKey:CommandDefinitionID"`
 }
 
 // RobotStatus 로봇 상태 정보
@@ -165,17 +179,6 @@ type RobotFactsheet struct {
 	DeletedAt         gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 }
 
-// 명령 타입 상수
-const (
-	CommandCataractRemoval = "CR" // 백내장 적출
-	CommandGlaucomaRemoval = "GR" // 적내장 적출
-	CommandGripperCleaning = "GC" // 그리퍼 세정
-	CommandCameraCheck     = "CC" // 카메라 확인
-	CommandCameraCleaning  = "CL" // 카메라 세정
-	CommandKnifeCleaning   = "KC" // 나이프 세정
-	CommandOrderCancel     = "OC" // 명령 취소
-)
-
 // 상태 상수
 const (
 	StatusPending    = "PENDING"
@@ -184,7 +187,7 @@ const (
 	StatusFailure    = "FAILURE"
 	StatusAbnormal   = "ABNORMAL"
 	StatusNormal     = "NORMAL"
-	StatusRejected   = "REJECTED" // 실행 중인 명령이 있어서 거부됨
+	StatusRejected   = "REJECTED"
 )
 
 // 로봇 연결 상태 상수
@@ -194,42 +197,33 @@ const (
 	ConnectionStateConnectionBroken = "CONNECTIONBROKEN"
 )
 
+// 명령 타입 상수 (OC는 별도 처리 로직에 사용되므로 유지)
+const (
+	CommandOrderCancel = "OC" // 명령 취소
+)
+
 // GetResponseCode 응답 코드 생성
 func (c *Command) GetResponseCode() string {
+	// 관계가 로드되었는지 확인
+	if c.CommandDefinition.CommandType == "" {
+		return "UNKNOWN:F" // 혹은 기본 오류 코드
+	}
+
+	cmdType := c.CommandDefinition.CommandType
 	switch c.Status {
 	case StatusSuccess:
-		return c.CommandType + ":S"
+		return cmdType + ":S"
 	case StatusFailure:
-		return c.CommandType + ":F"
+		return cmdType + ":F"
 	case StatusAbnormal:
-		return c.CommandType + ":A"
+		return cmdType + ":A"
 	case StatusNormal:
-		return c.CommandType + ":N"
+		return cmdType + ":N"
 	case StatusRejected:
-		return c.CommandType + ":R"
+		return cmdType + ":R"
 	default:
-		return c.CommandType + ":F"
+		return cmdType + ":F"
 	}
-}
-
-// IsValidCommand 유효한 명령인지 확인
-func IsValidCommand(cmd string) bool {
-	validCommands := []string{
-		CommandCataractRemoval,
-		CommandGlaucomaRemoval,
-		CommandGripperCleaning,
-		CommandCameraCheck,
-		CommandCameraCleaning,
-		CommandKnifeCleaning,
-		CommandOrderCancel,
-	}
-
-	for _, validCmd := range validCommands {
-		if cmd == validCmd {
-			return true
-		}
-	}
-	return false
 }
 
 // IsValidConnectionState 유효한 연결 상태인지 확인
@@ -239,9 +233,8 @@ func IsValidConnectionState(state string) bool {
 		ConnectionStateOffline,
 		ConnectionStateConnectionBroken,
 	}
-
-	for _, validState := range validStates {
-		if state == validState {
+	for _, s := range validStates {
+		if state == s {
 			return true
 		}
 	}

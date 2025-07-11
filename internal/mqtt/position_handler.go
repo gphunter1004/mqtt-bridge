@@ -1,4 +1,4 @@
-// internal/mqtt/position_handler.go
+// internal/mqtt/position_handler.go (최종 수정본)
 package mqtt
 
 import (
@@ -108,7 +108,7 @@ func (h *PositionHandler) sendInitPositionRequest(stateMsg *models.RobotStateMes
 
 	// 요청 메시지 생성
 	request := map[string]interface{}{
-		"headerId":     time.Now().Unix(),
+		"headerId":     utils.GetNextHeaderID(), // 1씩 증가하는 ID 사용
 		"timestamp":    time.Now().Format(time.RFC3339Nano),
 		"version":      "2.0.0",
 		"manufacturer": safeString(stateMsg.Manufacturer),
@@ -302,7 +302,7 @@ func (h *PositionHandler) RequestFactsheet(serialNumber, manufacturer string) er
 	actionID := h.generateUniqueID()
 
 	request := map[string]interface{}{
-		"headerId":     time.Now().Unix(),
+		"headerId":     utils.GetNextHeaderID(), // 1씩 증가하는 ID 사용
 		"timestamp":    time.Now().Format(time.RFC3339Nano),
 		"version":      "2.0.0",
 		"manufacturer": manufacturer,

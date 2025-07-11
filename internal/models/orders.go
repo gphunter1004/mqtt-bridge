@@ -1,4 +1,4 @@
-// internal/models/order.go (수정된 버전 - 중복 제거 및 누락 타입 추가)
+// internal/models/orders.go (최종 수정본)
 package models
 
 import (
@@ -7,22 +7,25 @@ import (
 	"gorm.io/gorm"
 )
 
-// CommandOrderMapping PLC 명령과 오더들의 매핑 (1:N 관계)
+// CommandOrderMapping PLC 명령과 오더 템플릿의 매핑. 조건부 분기 로직 포함.
 type CommandOrderMapping struct {
-	ID             uint           `gorm:"primaryKey" json:"id"`
-	CommandType    string         `gorm:"size:10;not null;index" json:"command_type"` // CR, GR, GC 등
-	TemplateID     uint           `gorm:"not null;index" json:"template_id"`
-	ExecutionOrder int            `gorm:"not null" json:"execution_order"` // 오더 실행 순서
-	IsActive       bool           `gorm:"default:true" json:"is_active"`
-	CreatedAt      time.Time      `json:"created_at"`
-	UpdatedAt      time.Time      `json:"updated_at"`
-	DeletedAt      gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+	ID                  uint `gorm:"primaryKey"`
+	CommandDefinitionID uint `gorm:"not null;index:idx_cmd_order"`
+	TemplateID          uint `gorm:"not null"`
+	ExecutionOrder      int  `gorm:"not null;index:idx_cmd_order"` // 현재 오더의 순번 (1부터 시작, 고유해야 함)
+	NextExecutionOrder  int  `gorm:"not null;default:0"`           // 성공 시 다음에 실행할 오더 순번 (0이면 성공 종료)
+	FailureOrder        int  `gorm:"not null;default:0"`           // 실패 시 다음에 실행할 오더 순번 (0이면 실패 종료)
+	IsActive            bool `gorm:"default:true"`
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+	DeletedAt           gorm.DeletedAt `gorm:"index"`
 
 	// 관계
-	Template OrderTemplate `gorm:"foreignKey:TemplateID"`
+	CommandDefinition CommandDefinition `gorm:"foreignKey:CommandDefinitionID"`
+	Template          OrderTemplate     `gorm:"foreignKey:TemplateID"`
 }
 
-// OrderTemplate 오더 템플릿 (이제 명령과 직접 매핑되지 않음)
+// OrderTemplate 오더 템플릿
 type OrderTemplate struct {
 	ID          uint           `gorm:"primaryKey" json:"id"`
 	Name        string         `gorm:"size:100;not null;uniqueIndex" json:"name"`
@@ -53,23 +56,21 @@ type NodeTemplate struct {
 	DeletedAt             gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 }
 
-// ActionTemplate 액션 템플릿
+// ActionTemplate 액션 템플릿 (재사용 가능한 액션 라이브러리)
 type ActionTemplate struct {
 	ID                uint           `gorm:"primaryKey" json:"id"`
-	OrderStepID       uint           `gorm:"not null;index" json:"order_step_id"`
-	ActionType        string         `gorm:"size:100;not null" json:"action_type"`
-	ActionDescription string         `gorm:"size:500" json:"action_description"`
+	ActionType        string         `gorm:"size:100;not null"`
+	ActionDescription string         `gorm:"size:500"`
 	BlockingType      string         `gorm:"size:20;default:NONE" json:"blocking_type"` // NONE, SOFT, HARD
 	CreatedAt         time.Time      `json:"created_at"`
 	UpdatedAt         time.Time      `json:"updated_at"`
 	DeletedAt         gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 
 	// 관계
-	OrderStep  OrderStep         `gorm:"foreignKey:OrderStepID"`
 	Parameters []ActionParameter `gorm:"foreignKey:ActionTemplateID" json:"parameters"`
 }
 
-// ActionParameter 액션 파라미터
+// ActionParameter 액션 파라미터 (오직 ActionTemplate에만 종속됨)
 type ActionParameter struct {
 	ID               uint           `gorm:"primaryKey" json:"id"`
 	ActionTemplateID uint           `gorm:"not null;index" json:"action_template_id"`
@@ -105,14 +106,25 @@ type EdgeTemplate struct {
 	OrderStep OrderStep `gorm:"foreignKey:OrderStepID"`
 }
 
-// OrderStep 오더 단계 (액션 순차 실행 보장)
+// StepActionMapping OrderStep과 ActionTemplate의 관계를 정의하는 독립적인 테이블
+type StepActionMapping struct {
+	ID               uint `gorm:"primaryKey"`
+	OrderStepID      uint `gorm:"not null;index:idx_step_action_order"`
+	ActionTemplateID uint `gorm:"not null;index:idx_step_action_order"`
+	ExecutionOrder   int  `gorm:"not null;index:idx_step_action_order"`
+
+	// 관계
+	ActionTemplate ActionTemplate `gorm:"foreignKey:ActionTemplateID"`
+}
+
+// OrderStep 오더 단계
 type OrderStep struct {
 	ID         uint `gorm:"primaryKey" json:"id"`
 	TemplateID uint `gorm:"not null;index" json:"template_id"`
 	StepOrder  int  `gorm:"not null" json:"step_order"` // 실행 순서
 
 	// 실행 조건
-	PreviousStepResult string `gorm:"size:20" json:"previous_step_result"` // SUCCESS, FAILURE, ABNORMAL, NORMAL, ALWAYS
+	PreviousStepResult string `gorm:"size:20" json:"previous_step_result"` // SUCCESS, FAILURE, ALWAYS 등
 
 	// 노드 정보
 	NodeTemplateID *uint `json:"node_template_id"` // null이면 기본값 사용
@@ -126,18 +138,18 @@ type OrderStep struct {
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 
 	// 관계
-	Template     OrderTemplate    `gorm:"foreignKey:TemplateID"`
-	NodeTemplate *NodeTemplate    `gorm:"foreignKey:NodeTemplateID"`
-	Actions      []ActionTemplate `gorm:"foreignKey:OrderStepID" json:"actions"`
-	Edges        []EdgeTemplate   `gorm:"foreignKey:OrderStepID" json:"edges"`
+	Template           OrderTemplate       `gorm:"foreignKey:TemplateID"`
+	NodeTemplate       *NodeTemplate       `gorm:"foreignKey:NodeTemplateID"`
+	StepActionMappings []StepActionMapping `gorm:"foreignKey:OrderStepID"`
+	Edges              []EdgeTemplate      `gorm:"foreignKey:OrderStepID" json:"edges"`
 }
 
-// CommandExecution PLC 명령 전체 실행 (여러 오더 포함)
+// CommandExecution PLC 명령 전체 실행
 type CommandExecution struct {
 	ID                uint           `gorm:"primaryKey" json:"id"`
-	CommandID         uint           `gorm:"not null;index" json:"command_id"`     // commands 테이블 참조
-	Status            string         `gorm:"size:20;not null" json:"status"`       // PENDING, RUNNING, COMPLETED, FAILED, CANCELLED
-	CurrentOrderIndex int            `gorm:"default:0" json:"current_order_index"` // 현재 실행 중인 오더 인덱스
+	CommandID         uint           `gorm:"not null;index" json:"command_id"`
+	Status            string         `gorm:"size:20;not null" json:"status"`
+	CurrentOrderIndex int            `gorm:"default:0" json:"current_order_index"`
 	StartedAt         time.Time      `json:"started_at"`
 	CompletedAt       *time.Time     `json:"completed_at"`
 	CreatedAt         time.Time      `json:"created_at"`
@@ -152,12 +164,12 @@ type CommandExecution struct {
 // OrderExecution 개별 오더 실행
 type OrderExecution struct {
 	ID                 uint           `gorm:"primaryKey" json:"id"`
-	CommandExecutionID uint           `gorm:"not null;index" json:"command_execution_id"`    // 상위 명령 실행 참조
-	TemplateID         uint           `gorm:"not null;index" json:"template_id"`             // order_templates 테이블 참조
-	OrderID            string         `gorm:"size:100;not null;uniqueIndex" json:"order_id"` // 로봇에 전송된 실제 Order ID
-	ExecutionOrder     int            `gorm:"not null" json:"execution_order"`               // 명령 내에서의 실행 순서
+	CommandExecutionID uint           `gorm:"not null;index" json:"command_execution_id"`
+	TemplateID         uint           `gorm:"not null;index" json:"template_id"`
+	OrderID            string         `gorm:"size:100;not null;uniqueIndex" json:"order_id"`
+	ExecutionOrder     int            `gorm:"not null" json:"execution_order"`
 	CurrentStep        int            `gorm:"default:0" json:"current_step"`
-	Status             string         `gorm:"size:20;not null" json:"status"` // PENDING, RUNNING, COMPLETED, FAILED, WAITING
+	Status             string         `gorm:"size:20;not null" json:"status"`
 	StartedAt          time.Time      `json:"started_at"`
 	CompletedAt        *time.Time     `json:"completed_at"`
 	CreatedAt          time.Time      `json:"created_at"`
@@ -170,25 +182,23 @@ type OrderExecution struct {
 	Steps            []StepExecution  `gorm:"foreignKey:ExecutionID" json:"steps"`
 }
 
-// StepExecution 단계별 실행 추적 (액션 완료 대기 포함)
+// StepExecution 단계별 실행 추적
 type StepExecution struct {
-	ID          uint   `gorm:"primaryKey" json:"id"`
-	ExecutionID uint   `gorm:"not null;index" json:"execution_id"`
-	StepOrder   int    `gorm:"not null" json:"step_order"`
-	Status      string `gorm:"size:20;not null" json:"status"` // PENDING, RUNNING, COMPLETED, FAILED, SKIPPED, TIMEOUT
-	Result      string `gorm:"size:20" json:"result"`          // SUCCESS, FAILURE, ABNORMAL, NORMAL
-
-	// 액션 추적
-	SentToRobot     bool      `gorm:"default:false" json:"sent_to_robot"`    // 로봇에 전송되었는지
-	ActionCompleted bool      `gorm:"default:false" json:"action_completed"` // 액션이 완료되었는지
-	LastActionCheck time.Time `json:"last_action_check"`                     // 마지막 액션 상태 확인 시간
-
-	StartedAt    time.Time      `json:"started_at"`
-	CompletedAt  *time.Time     `json:"completed_at"`
-	ErrorMessage string         `gorm:"size:500" json:"error_message"`
-	CreatedAt    time.Time      `json:"created_at"`
-	UpdatedAt    time.Time      `json:"updated_at"`
-	DeletedAt    gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+	ID                  uint           `gorm:"primaryKey" json:"id"`
+	ExecutionID         uint           `gorm:"not null;index" json:"execution_id"`
+	StepOrder           int            `gorm:"not null" json:"step_order"`
+	Status              string         `gorm:"size:20;not null" json:"status"`
+	Result              string         `gorm:"size:20" json:"result"`
+	SentToRobot         bool           `gorm:"default:false" json:"sent_to_robot"`
+	ActionCompleted     bool           `gorm:"default:false" json:"action_completed"`
+	ExpectedActionCount int            `json:"expected_action_count"` // (추가) 이 단계에서 기대하는 총 액션 개수
+	LastActionCheck     time.Time      `json:"last_action_check"`
+	StartedAt           time.Time      `json:"started_at"`
+	CompletedAt         *time.Time     `json:"completed_at"`
+	ErrorMessage        string         `gorm:"size:500" json:"error_message"`
+	CreatedAt           time.Time      `json:"created_at"`
+	UpdatedAt           time.Time      `json:"updated_at"`
+	DeletedAt           gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 
 	// 관계
 	Execution OrderExecution `gorm:"foreignKey:ExecutionID"`
@@ -216,7 +226,6 @@ type OrderNode struct {
 	Actions      []OrderAction `json:"actions"`
 }
 
-// NodePosition 노드 위치 정보 (robot_state.go와 통합)
 type NodePosition struct {
 	X                     float64 `json:"x"`
 	Y                     float64 `json:"y"`
@@ -253,44 +262,33 @@ type OrderEdge struct {
 	Released        bool    `json:"released"`
 }
 
-// 새로운 상태 상수들
+// 상태 상수들
 const (
-	// 명령 실행 상태
 	CommandExecutionStatusPending   = "PENDING"
 	CommandExecutionStatusRunning   = "RUNNING"
 	CommandExecutionStatusCompleted = "COMPLETED"
 	CommandExecutionStatusFailed    = "FAILED"
 	CommandExecutionStatusCancelled = "CANCELLED"
-
-	// 오더 실행 상태
-	OrderExecutionStatusPending   = "PENDING"
-	OrderExecutionStatusRunning   = "RUNNING"
-	OrderExecutionStatusWaiting   = "WAITING" // 이전 오더 완료 대기
-	OrderExecutionStatusCompleted = "COMPLETED"
-	OrderExecutionStatusFailed    = "FAILED"
-
-	// 단계 실행 상태
-	StepExecutionStatusPending   = "PENDING"
-	StepExecutionStatusRunning   = "RUNNING"
-	StepExecutionStatusCompleted = "COMPLETED"
-	StepExecutionStatusFailed    = "FAILED"
-	StepExecutionStatusSkipped   = "SKIPPED"
-	StepExecutionStatusTimeout   = "TIMEOUT"
-
-	// 단계 실행 조건
-	PreviousResultAny      = "ALWAYS"
-	PreviousResultSuccess  = "SUCCESS"
-	PreviousResultFailure  = "FAILURE"
-	PreviousResultAbnormal = "ABNORMAL"
-	PreviousResultNormal   = "NORMAL"
-
-	// 블로킹 타입 (robot_state.go와 통합 - 여기서만 정의)
-	BlockingTypeNone = "NONE"
-	BlockingTypeSoft = "SOFT"
-	BlockingTypeHard = "HARD"
-
-	// 방향
-	DirectionStraight = "STRAIGHT"
-	DirectionLeft     = "LEFT"
-	DirectionRight    = "RIGHT"
+	OrderExecutionStatusPending     = "PENDING"
+	OrderExecutionStatusRunning     = "RUNNING"
+	OrderExecutionStatusWaiting     = "WAITING"
+	OrderExecutionStatusCompleted   = "COMPLETED"
+	OrderExecutionStatusFailed      = "FAILED"
+	StepExecutionStatusPending      = "PENDING"
+	StepExecutionStatusRunning      = "RUNNING"
+	StepExecutionStatusFinished     = "FINISHED"
+	StepExecutionStatusFailed       = "FAILED"
+	StepExecutionStatusSkipped      = "SKIPPED"
+	StepExecutionStatusTimeout      = "TIMEOUT"
+	PreviousResultAny               = "ALWAYS"
+	PreviousResultSuccess           = "SUCCESS"
+	PreviousResultFailure           = "FAILURE"
+	PreviousResultAbnormal          = "ABNORMAL"
+	PreviousResultNormal            = "NORMAL"
+	BlockingTypeNone                = "NONE"
+	BlockingTypeSoft                = "SOFT"
+	BlockingTypeHard                = "HARD"
+	DirectionStraight               = "STRAIGHT"
+	DirectionLeft                   = "LEFT"
+	DirectionRight                  = "RIGHT"
 )

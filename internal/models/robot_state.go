@@ -1,11 +1,5 @@
-// internal/models/robot_state.go (수정된 버전 - 중복 제거)
+// internal/models/robot_state.go (수정된 버전 - DB 모델 삭제)
 package models
-
-import (
-	"time"
-
-	"gorm.io/gorm"
-)
 
 // RobotStateMessage 로봇 상태 메시지
 type RobotStateMessage struct {
@@ -125,51 +119,6 @@ type Velocity struct {
 	Omega float64 `json:"omega"`
 	Vx    float64 `json:"vx"`
 	Vy    float64 `json:"vy"`
-}
-
-// RobotState 로봇 상태 정보 (DB 저장용)
-type RobotState struct {
-	ID           uint      `gorm:"primaryKey" json:"id"`
-	SerialNumber string    `gorm:"size:50;not null;index" json:"serial_number"`
-	Manufacturer string    `gorm:"size:50;not null" json:"manufacturer"`
-	Version      string    `gorm:"size:10" json:"version"`
-	HeaderID     int64     `gorm:"not null" json:"header_id"`
-	Timestamp    time.Time `gorm:"not null" json:"timestamp"`
-
-	// 위치 정보
-	PositionX           float64 `json:"position_x"`
-	PositionY           float64 `json:"position_y"`
-	PositionTheta       float64 `json:"position_theta"`
-	LocalizationScore   float64 `json:"localization_score"`
-	PositionInitialized bool    `json:"position_initialized"`
-	MapID               string  `gorm:"size:100" json:"map_id"`
-
-	// 배터리 정보
-	BatteryCharge  float64 `json:"battery_charge"`
-	BatteryVoltage float64 `json:"battery_voltage"`
-	BatteryHealth  int     `json:"battery_health"`
-	Charging       bool    `json:"charging"`
-
-	// 운영 상태
-	OperatingMode string `gorm:"size:20" json:"operating_mode"`
-	Driving       bool   `json:"driving"`
-	Paused        bool   `json:"paused"`
-
-	// 안전 상태
-	EStop          string `gorm:"size:20" json:"e_stop"`
-	FieldViolation bool   `json:"field_violation"`
-
-	// 주문 정보
-	OrderID    string `gorm:"size:100" json:"order_id"`
-	LastNodeID string `gorm:"size:100" json:"last_node_id"`
-
-	// 상태 정보
-	ErrorCount  int `json:"error_count"`
-	ActionCount int `json:"action_count"`
-
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
-	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 }
 
 // InitPositionRequest initPosition 요청 메시지

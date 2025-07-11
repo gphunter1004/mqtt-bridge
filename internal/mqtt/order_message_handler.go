@@ -1,4 +1,4 @@
-// internal/mqtt/order_message_handler.go
+// internal/mqtt/order_message_handler.go (최종 수정본)
 package mqtt
 
 import (
@@ -9,6 +9,7 @@ import (
 	"mqtt-bridge/internal/config"
 	"mqtt-bridge/internal/models"
 	"mqtt-bridge/internal/utils"
+	"sort"
 	"strconv"
 	"time"
 
@@ -33,13 +34,13 @@ func (h *OrderMessageHandler) BuildOrderMessage(execution *models.OrderExecution
 	edges := h.buildOrderEdges(step)
 
 	orderMsg := &models.OrderMessage{
-		HeaderID:      time.Now().Unix(),
+		HeaderID:      utils.GetNextHeaderID(), // 수정: 1씩 증가하는 ID 사용
 		Timestamp:     time.Now().Format(time.RFC3339Nano),
 		Version:       "2.0.0",
 		Manufacturer:  h.config.RobotManufacturer,
 		SerialNumber:  h.config.RobotSerialNumber,
 		OrderID:       execution.OrderID,
-		OrderUpdateID: step.StepOrder,
+		OrderUpdateID: 0, // 수정: 항상 0으로 고정
 		Nodes:         []models.OrderNode{node},
 		Edges:         edges,
 	}
@@ -73,7 +74,7 @@ func (h *OrderMessageHandler) SendCancelOrder() error {
 	actionID := h.generateActionID()
 
 	request := map[string]interface{}{
-		"headerId":     time.Now().Unix(),
+		"headerId":     utils.GetNextHeaderID(), // 수정: 1씩 증가하는 ID 사용
 		"timestamp":    time.Now().Format(time.RFC3339Nano),
 		"version":      "2.0.0",
 		"manufacturer": h.config.RobotManufacturer,
@@ -129,8 +130,14 @@ func (h *OrderMessageHandler) buildOrderNode(step *models.OrderStep) models.Orde
 		nodePos.MapID = step.NodeTemplate.MapID
 	}
 
-	actions := make([]models.OrderAction, 0, len(step.Actions))
-	for _, actionTemplate := range step.Actions {
+	// StepActionMappings를 ExecutionOrder 순서로 정렬
+	sort.Slice(step.StepActionMappings, func(i, j int) bool {
+		return step.StepActionMappings[i].ExecutionOrder < step.StepActionMappings[j].ExecutionOrder
+	})
+
+	actions := make([]models.OrderAction, 0, len(step.StepActionMappings))
+	for _, mapping := range step.StepActionMappings {
+		actionTemplate := mapping.ActionTemplate
 		action := models.OrderAction{
 			ActionType:        actionTemplate.ActionType,
 			ActionID:          h.GenerateActionID(),
