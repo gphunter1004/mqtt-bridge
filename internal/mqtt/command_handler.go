@@ -1,11 +1,7 @@
-// internal/mqtt/command_handler.go
+// internal/mqtt/command_handler.go (업데이트된 버전)
 package mqtt
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
-	"fmt"
 	"mqtt-bridge/internal/config"
 	"mqtt-bridge/internal/models"
 	"mqtt-bridge/internal/utils"
@@ -18,18 +14,22 @@ import (
 )
 
 type CommandHandler struct {
-	db          *gorm.DB
-	redisClient *redis.Client
-	mqttClient  mqtt.Client
-	config      *config.Config
+	db            *gorm.DB
+	redisClient   *redis.Client
+	mqttClient    mqtt.Client
+	config        *config.Config
+	orderExecutor *OrderExecutor
 }
 
 func NewCommandHandler(db *gorm.DB, redisClient *redis.Client, mqttClient mqtt.Client, cfg *config.Config) *CommandHandler {
+	orderExecutor := NewOrderExecutor(db, redisClient, mqttClient, cfg)
+
 	return &CommandHandler{
-		db:          db,
-		redisClient: redisClient,
-		mqttClient:  mqttClient,
-		config:      cfg,
+		db:            db,
+		redisClient:   redisClient,
+		mqttClient:    mqttClient,
+		config:        cfg,
+		orderExecutor: orderExecutor,
 	}
 }
 
@@ -52,11 +52,21 @@ func (h *CommandHandler) HandleCommand(client mqtt.Client, msg mqtt.Message) {
 	}
 
 	// 실행 중인 명령이 있는지 확인
-	var processingCount int64
-	h.db.Model(&models.Command{}).Where("status = ?", models.StatusProcessing).Count(&processingCount)
+	var runningCount int64
+	h.db.Model(&models.CommandExecution{}).Where("status = ?", models.CommandExecutionStatusRunning).Count(&runningCount)
 
-	if processingCount > 0 {
+	if runningCount > 0 {
 		utils.Logger.Warnf("Command %s rejected: Another command is currently processing", commandType)
+		h.handleRejectedCommand(commandType)
+		return
+	}
+
+	// 해당 명령에 매핑된 오더가 있는지 확인
+	var mappingCount int64
+	h.db.Model(&models.CommandOrderMapping{}).Where("command_type = ? AND is_active = ?", commandType, true).Count(&mappingCount)
+
+	if mappingCount == 0 {
+		utils.Logger.Errorf("No active order mappings found for command: %s", commandType)
 		h.handleRejectedCommand(commandType)
 		return
 	}
@@ -73,33 +83,13 @@ func (h *CommandHandler) HandleCommand(client mqtt.Client, msg mqtt.Message) {
 		return
 	}
 
-	utils.Logger.Infof("Command accepted: ID=%d, Type=%s", command.ID, command.CommandType)
+	utils.Logger.Infof("Command accepted: ID=%d, Type=%s (will execute %d orders)", command.ID, command.CommandType, mappingCount)
 
 	// 명령 처리 시작
 	go h.processCommand(command)
 }
 
-// handleRejectedCommand 거부된 명령 처리
-func (h *CommandHandler) handleRejectedCommand(commandType string) {
-	// 거부된 명령을 데이터베이스에 기록
-	rejectedCommand := &models.Command{
-		CommandType:  commandType,
-		Status:       models.StatusRejected,
-		RequestTime:  time.Now(),
-		ErrorMessage: "Command rejected: Another command is currently processing",
-	}
-	now := time.Now()
-	rejectedCommand.ResponseTime = &now
-
-	if err := h.db.Create(rejectedCommand).Error; err != nil {
-		utils.Logger.Errorf("Failed to save rejected command to database: %v", err)
-	}
-
-	// PLC에 거부 응답 전송
-	h.sendResponseToPLC(commandType + ":R")
-}
-
-// processCommand 명령 처리 로직
+// processCommand 명령 처리
 func (h *CommandHandler) processCommand(command *models.Command) {
 	utils.Logger.Infof("Processing command: %s (ID: %d)", command.CommandType, command.ID)
 
@@ -115,24 +105,101 @@ func (h *CommandHandler) processCommand(command *models.Command) {
 
 	utils.Logger.Infof("Command %d status changed to PROCESSING", command.ID)
 
-	// 실제 로봇 명령 처리 시뮬레이션
-	processingTime := 2 * time.Second
-	utils.Logger.Infof("Processing robot operation for command %d", command.ID)
-	time.Sleep(processingTime)
+	// 오더 실행
+	if err := h.orderExecutor.ExecuteCommandOrder(command); err != nil {
+		h.failCommand(command, err.Error())
+		return
+	}
 
-	// 명령 타입에 따른 처리 결과 결정
-	finalStatus := h.determineCommandResult(command.CommandType)
-
-	// 최종 상태 업데이트
-	command.Status = finalStatus
+	// 오더 실행이 시작되면 성공 응답
+	command.Status = models.StatusSuccess
 	now := time.Now()
 	command.ResponseTime = &now
 	h.updateCommand(command)
 
-	utils.Logger.Infof("Command %d completed with status: %s", command.ID, finalStatus)
+	utils.Logger.Infof("Command %d order execution started successfully", command.ID)
 
 	// PLC에 응답 전송
 	h.sendResponseToPLC(command.GetResponseCode())
+}
+
+// HandleOrderStateUpdate 로봇 상태 업데이트 처리 (OrderExecutor로 위임)
+func (h *CommandHandler) HandleOrderStateUpdate(stateMsg *models.RobotStateMessage) {
+	h.orderExecutor.HandleOrderStateUpdate(stateMsg)
+}
+
+// handleOrderCancelCommand orderCancel 명령 처리
+func (h *CommandHandler) handleOrderCancelCommand() {
+	utils.Logger.Infof("Processing orderCancel command (OC)")
+
+	// orderCancel 명령을 DB에 기록
+	command := &models.Command{
+		CommandType: models.CommandOrderCancel,
+		Status:      models.StatusProcessing,
+		RequestTime: time.Now(),
+	}
+
+	if err := h.db.Create(command).Error; err != nil {
+		utils.Logger.Errorf("Failed to save orderCancel command: %v", err)
+		h.sendResponseToPLC("OC:F")
+		return
+	}
+
+	// 모든 실행 중인 오더들을 취소
+	if err := h.orderExecutor.CancelAllRunningOrders(); err != nil {
+		utils.Logger.Errorf("Failed to cancel running orders: %v", err)
+		h.failCommand(command, err.Error())
+		return
+	}
+
+	// 로봇에 cancelOrder 요청 전송
+	if err := h.orderExecutor.SendCancelOrder(); err != nil {
+		utils.Logger.Errorf("Failed to send cancelOrder to robot: %v", err)
+		h.failCommand(command, err.Error())
+		return
+	}
+
+	// 성공 응답을 PLC에 전송
+	command.Status = models.StatusSuccess
+	now := time.Now()
+	command.ResponseTime = &now
+	h.updateCommand(command)
+
+	h.sendResponseToPLC("OC:S")
+	utils.Logger.Infof("OrderCancel command completed successfully (Command ID: %d)", command.ID)
+}
+
+// FailProcessingCommands 외부에서 진행 중인 명령들을 실패 처리할 때 사용
+func (h *CommandHandler) FailProcessingCommands(reason string) {
+	// PLC 명령 실패 처리
+	var processingCommands []models.Command
+	h.db.Where("status = ?", models.StatusProcessing).Find(&processingCommands)
+
+	for _, command := range processingCommands {
+		h.failCommand(&command, reason)
+		utils.Logger.Warnf("Command %d failed due to: %s", command.ID, reason)
+	}
+
+	// 실행 중인 오더들도 취소
+	h.orderExecutor.CancelAllRunningOrders()
+}
+
+// handleRejectedCommand 거부된 명령 처리
+func (h *CommandHandler) handleRejectedCommand(commandType string) {
+	rejectedCommand := &models.Command{
+		CommandType:  commandType,
+		Status:       models.StatusRejected,
+		RequestTime:  time.Now(),
+		ErrorMessage: "Command rejected: Another command is currently processing or no order mappings found",
+	}
+	now := time.Now()
+	rejectedCommand.ResponseTime = &now
+
+	if err := h.db.Create(rejectedCommand).Error; err != nil {
+		utils.Logger.Errorf("Failed to save rejected command to database: %v", err)
+	}
+
+	h.sendResponseToPLC(commandType + ":R")
 }
 
 // isRobotOnline 로봇 온라인 상태 확인
@@ -146,27 +213,6 @@ func (h *CommandHandler) isRobotOnline() bool {
 	}
 
 	return robotStatus.ConnectionState == models.ConnectionStateOnline
-}
-
-// determineCommandResult 명령 결과 결정
-func (h *CommandHandler) determineCommandResult(commandType string) string {
-	switch commandType {
-	case models.CommandCataractRemoval, models.CommandGlaucomaRemoval:
-		return models.StatusSuccess
-	case models.CommandGripperCleaning, models.CommandCameraCleaning, models.CommandKnifeCleaning:
-		return models.StatusSuccess
-	case models.CommandOrderCancel:
-		return models.StatusSuccess // orderCancel은 항상 성공
-	case models.CommandCameraCheck:
-		// 시뮬레이션: 80% 확률로 정상
-		if time.Now().Unix()%5 != 0 {
-			return models.StatusNormal
-		} else {
-			return models.StatusAbnormal
-		}
-	default:
-		return models.StatusFailure
-	}
 }
 
 // failCommand 명령 실패 처리
@@ -201,100 +247,4 @@ func (h *CommandHandler) sendResponseToPLC(responseCode string) {
 	} else {
 		utils.Logger.Infof("Response sent successfully to PLC: %s", responseCode)
 	}
-}
-
-// FailProcessingCommands 외부에서 진행 중인 명령들을 실패 처리할 때 사용
-func (h *CommandHandler) FailProcessingCommands(reason string) {
-	var processingCommands []models.Command
-	h.db.Where("status = ?", models.StatusProcessing).Find(&processingCommands)
-
-	for _, command := range processingCommands {
-		h.failCommand(&command, reason)
-		utils.Logger.Warnf("Command %d failed due to: %s", command.ID, reason)
-	}
-}
-
-// handleOrderCancelCommand orderCancel 명령 처리
-func (h *CommandHandler) handleOrderCancelCommand() {
-	utils.Logger.Infof("Processing orderCancel command (OC)")
-
-	// orderCancel 명령을 DB에 기록
-	command := &models.Command{
-		CommandType: models.CommandOrderCancel,
-		Status:      models.StatusProcessing,
-		RequestTime: time.Now(),
-	}
-
-	if err := h.db.Create(command).Error; err != nil {
-		utils.Logger.Errorf("Failed to save orderCancel command: %v", err)
-		h.sendResponseToPLC("OC:F") // 실패 응답
-		return
-	}
-
-	// 로봇에 cancelOrder 요청 전송
-	robotSerial := h.config.RobotSerialNumber
-	robotManufacturer := h.config.RobotManufacturer
-
-	if err := h.sendCancelOrderToRobot(command, robotSerial, robotManufacturer); err != nil {
-		utils.Logger.Errorf("Failed to send cancelOrder to robot: %v", err)
-		h.failCommand(command, fmt.Sprintf("Failed to send cancelOrder: %v", err))
-		return
-	}
-
-	// 성공 응답을 PLC에 전송
-	command.Status = models.StatusSuccess
-	now := time.Now()
-	command.ResponseTime = &now
-	h.updateCommand(command)
-
-	h.sendResponseToPLC("OC:S") // 성공 응답
-	utils.Logger.Infof("OrderCancel command completed successfully (Command ID: %d)", command.ID)
-}
-
-// sendCancelOrderToRobot 로봇에 cancelOrder 요청 전송
-func (h *CommandHandler) sendCancelOrderToRobot(command *models.Command, serialNumber, manufacturer string) error {
-	actionID := h.generateActionID()
-
-	request := map[string]interface{}{
-		"headerId":     time.Now().Unix(),
-		"timestamp":    time.Now().Format(time.RFC3339Nano),
-		"version":      "2.0.0",
-		"manufacturer": manufacturer,
-		"serialNumber": serialNumber,
-		"actions": []map[string]interface{}{
-			{
-				"actionType":       "cancelOrder",
-				"actionId":         actionID,
-				"blockingType":     "HARD",
-				"actionParameters": []map[string]interface{}{},
-			},
-		},
-	}
-
-	reqData, err := json.Marshal(request)
-	if err != nil {
-		return fmt.Errorf("failed to marshal cancelOrder request: %v", err)
-	}
-
-	topic := fmt.Sprintf("meili/v2/%s/%s/instantActions", manufacturer, serialNumber)
-
-	utils.Logger.Infof("Sending cancelOrder request to %s (ActionID: %s)", topic, actionID)
-	utils.Logger.Debugf("CancelOrder request payload: %s", string(reqData))
-
-	token := h.mqttClient.Publish(topic, 0, false, reqData)
-	if token.Wait() && token.Error() != nil {
-		return fmt.Errorf("MQTT publish failed: %v", token.Error())
-	}
-
-	utils.Logger.Infof("CancelOrder request sent successfully to robot: %s (ActionID: %s)", serialNumber, actionID)
-	return nil
-}
-
-// generateActionID 액션 ID 생성
-func (h *CommandHandler) generateActionID() string {
-	randomBytes := make([]byte, 16)
-	if _, err := rand.Read(randomBytes); err != nil {
-		return fmt.Sprintf("action_%d", time.Now().UnixNano())
-	}
-	return fmt.Sprintf("%s_%d", hex.EncodeToString(randomBytes), time.Now().UnixNano())
 }

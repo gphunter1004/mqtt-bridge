@@ -1,4 +1,4 @@
-// internal/models/command.go
+// internal/models/command.go (수정된 버전 - 중복 제거)
 package models
 
 import (
@@ -56,14 +56,14 @@ type FactsheetRequest struct {
 
 // Action 액션 정보
 type Action struct {
-	ActionType       string            `json:"actionType"`
-	ActionID         string            `json:"actionId"`
-	BlockingType     string            `json:"blockingType"`
-	ActionParameters []ActionParameter `json:"actionParameters"`
+	ActionType       string        `json:"actionType"`
+	ActionID         string        `json:"actionId"`
+	BlockingType     string        `json:"blockingType"`
+	ActionParameters []ActionParam `json:"actionParameters"` // 이름 변경으로 중복 방지
 }
 
-// ActionParameter 액션 파라미터
-type ActionParameter struct {
+// ActionParam 액션 파라미터 (기존 ActionParameter와 구분)
+type ActionParam struct {
 	Key   string      `json:"key"`
 	Value interface{} `json:"value"`
 }

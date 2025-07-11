@@ -1,4 +1,7 @@
-// internal/service/bridge.go
+// internal/service/order_service.go 파일을 삭제하고
+// internal/service/bridge.go 에서 service import 제거
+
+// internal/service/bridge.go (수정된 버전)
 package service
 
 import (
@@ -57,7 +60,7 @@ func (s *BridgeService) Start(ctx context.Context) error {
 	}
 	utils.Logger.Infof("Subscribed to robot factsheet topic: %s", robotFactsheetTopic)
 
-	// 로봇 상태 토픽 구독 (와일드카드 사용) - 새로 추가
+	// 로봇 상태 토픽 구독 (와일드카드 사용)
 	robotStateTopic := "meili/v2/+/+/state"
 	token = s.mqttClient.Subscribe(robotStateTopic, 0, s.handler.HandleRobotState)
 	if token.Wait() && token.Error() != nil {

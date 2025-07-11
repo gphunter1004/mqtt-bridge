@@ -1,4 +1,4 @@
-// internal/models/robot_state.go
+// internal/models/robot_state.go (수정된 버전 - 중복 제거)
 package models
 
 import (
@@ -104,17 +104,14 @@ type InfoReference struct {
 
 // NodeState 노드 상태 정보
 type NodeState struct {
-	NodeID       string       `json:"nodeId"`
-	NodePosition NodePosition `json:"nodePosition"`
-	Released     bool         `json:"released"`
-	SequenceID   int          `json:"sequenceId"`
-}
-
-// NodePosition 노드 위치 정보
-type NodePosition struct {
-	Theta float64 `json:"theta"`
-	X     float64 `json:"x"`
-	Y     float64 `json:"y"`
+	NodeID       string `json:"nodeId"`
+	NodePosition struct {
+		Theta float64 `json:"theta"`
+		X     float64 `json:"x"`
+		Y     float64 `json:"y"`
+	} `json:"nodePosition"`
+	Released   bool `json:"released"`
+	SequenceID int  `json:"sequenceId"`
 }
 
 // SafetyState 안전 상태 정보
@@ -226,12 +223,7 @@ const (
 	ActionTypeFactsheetRequest = "factsheetRequest"
 )
 
-// 블로킹 타입 상수
-const (
-	BlockingTypeNone = "NONE"
-	BlockingTypeHard = "HARD"
-	BlockingTypeSoft = "SOFT"
-)
+// 블로킹 타입은 order.go에서 정의됨 (중복 제거)
 
 // IsValidOperatingMode 유효한 운영 모드인지 확인
 func IsValidOperatingMode(mode string) bool {

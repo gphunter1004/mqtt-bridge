@@ -1,4 +1,4 @@
-// internal/mqtt/handler.go
+// internal/mqtt/handler.go (service 의존성 제거)
 package mqtt
 
 import (
@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// MessageHandler 메인 메시지 핸들러 (분리된 핸들러들을 조합)
+// MessageHandler 메인 메시지 핸들러 (service 의존성 제거)
 type MessageHandler struct {
 	commandHandler  *CommandHandler
 	robotHandler    *RobotHandler
@@ -19,7 +19,7 @@ type MessageHandler struct {
 }
 
 func NewMessageHandler(db *gorm.DB, redisClient *redis.Client, mqttClient mqtt.Client, cfg *config.Config) *MessageHandler {
-	// 각 핸들러 생성
+	// 각 핸들러 생성 (service 의존성 제거)
 	commandHandler := NewCommandHandler(db, redisClient, mqttClient, cfg)
 	positionHandler := NewPositionHandler(db, redisClient, mqttClient, cfg)
 	robotHandler := NewRobotHandler(db, redisClient, mqttClient, cfg, commandHandler, positionHandler)
@@ -31,7 +31,7 @@ func NewMessageHandler(db *gorm.DB, redisClient *redis.Client, mqttClient mqtt.C
 	}
 }
 
-// HandleCommand PLC 명령 처리 (위임)
+// HandleCommand PLC 명령 처리 (오더 시스템으로 위임)
 func (h *MessageHandler) HandleCommand(client mqtt.Client, msg mqtt.Message) {
 	h.commandHandler.HandleCommand(client, msg)
 }
@@ -41,14 +41,18 @@ func (h *MessageHandler) HandleRobotConnectionState(client mqtt.Client, msg mqtt
 	h.robotHandler.HandleRobotConnectionState(client, msg)
 }
 
-// HandleRobotState 로봇 상태 처리 (위임 + 위치 체크)
+// HandleRobotState 로봇 상태 처리 (오더 시스템 상태 업데이트 포함)
 func (h *MessageHandler) HandleRobotState(client mqtt.Client, msg mqtt.Message) {
 	// 기본 로봇 상태 처리
 	h.robotHandler.HandleRobotState(client, msg)
 
-	// 위치 초기화 체크
+	// 오더 상태 업데이트
 	var stateMsg models.RobotStateMessage
 	if json.Unmarshal(msg.Payload(), &stateMsg) == nil {
+		// 오더 진행 상황 업데이트 (commandHandler에서 직접 처리)
+		h.commandHandler.HandleOrderStateUpdate(&stateMsg)
+
+		// 위치 초기화 체크
 		h.positionHandler.CheckAndRequestInitPosition(&stateMsg)
 	}
 }
