@@ -1,10 +1,13 @@
-// cmd/main.go - DI 패턴 적용된 최종 메인 파일
 package main
 
 import (
 	"context"
 	"mqtt-bridge/internal/config"
-	"mqtt-bridge/internal/di"
+	"mqtt-bridge/internal/database"
+	"mqtt-bridge/internal/mqtt"
+	"mqtt-bridge/internal/redis"
+	"mqtt-bridge/internal/service"
+	"mqtt-bridge/internal/utils"
 	"os"
 	"os/signal"
 	"syscall"
@@ -14,44 +17,52 @@ func main() {
 	// 설정 로드
 	cfg, err := config.Load()
 	if err != nil {
-		panic("Failed to load config: " + err.Error())
+		utils.Logger.Fatalf("Failed to load config: %v", err)
 	}
 
-	// DI 컨테이너 생성
-	container, err := di.NewContainer(cfg)
+	// 로거 설정
+	utils.SetupLogger(cfg.LogLevel)
+
+	// 데이터베이스 연결
+	db, err := database.NewPostgresDB(cfg)
 	if err != nil {
-		panic("Failed to create DI container: " + err.Error())
+		utils.Logger.Fatalf("Failed to connect to database: %v", err)
 	}
-	defer container.Cleanup()
+
+	// Redis 연결
+	redisClient, err := redis.NewRedisClient(cfg)
+	if err != nil {
+		utils.Logger.Fatalf("Failed to connect to Redis: %v", err)
+	}
+
+	// MQTT 클라이언트 생성
+	mqttClient, err := mqtt.NewClient(cfg)
+	if err != nil {
+		utils.Logger.Fatalf("Failed to create MQTT client: %v", err)
+	}
+
+	// 브릿지 서비스 생성
+	bridgeService := service.NewBridgeService(db, redisClient, mqttClient, cfg)
 
 	// 브릿지 서비스 시작
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := container.BridgeService.Start(ctx); err != nil {
-		container.Logger.Fatalf("Failed to start bridge service: %v", err)
+	if err := bridgeService.Start(ctx); err != nil {
+		utils.Logger.Fatalf("Failed to start bridge service: %v", err)
 	}
-
-	// 시작 완료 로그
-	container.Logger.Infof("🎯 MQTT Bridge with DI pattern started successfully")
-	container.Logger.Infof("📊 Services initialized:")
-	container.Logger.Infof("   ✅ Database Service")
-	container.Logger.Infof("   ✅ Cache Service")
-	container.Logger.Infof("   ✅ Message Publisher")
-	container.Logger.Infof("   ✅ Order Builder")
-	container.Logger.Infof("   ✅ Command Handler")
-	container.Logger.Infof("   ✅ Robot Handler")
-	container.Logger.Infof("   ✅ Order Executor")
 
 	// 우아한 종료 처리
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// 종료 신호 대기
+	utils.Logger.Info("MQTT Bridge started successfully")
 	<-sigChan
 
-	container.Logger.Infof("🛑 Shutdown signal received")
+	utils.Logger.Info("Shutting down...")
 	cancel()
 
-	container.Logger.Infof("✅ MQTT Bridge shutdown completed")
+	// 연결 종료
+	mqttClient.Disconnect(250)
+	redisClient.Close()
+
+	utils.Logger.Info("Shutdown complete")
 }
