@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"mqtt-bridge/internal/config"
 	"mqtt-bridge/internal/models"
+	"mqtt-bridge/internal/repository" // (수정) repository 패키지 import
 	"mqtt-bridge/internal/utils"
 	"time"
 
@@ -55,7 +56,6 @@ func (e *OrderExecutor) ExecuteCommandOrder(command *models.Command) error {
 
 // executeNextOrder 조건에 맞는 다음 오더를 찾아 실행
 func (e *OrderExecutor) executeNextOrder(commandExecution *models.CommandExecution) error {
-	// (수정) 항상 CommandExecution 객체의 모든 관련 정보를 로드하도록 보장
 	e.db.Preload("Command.CommandDefinition").First(&commandExecution, commandExecution.ID)
 
 	if commandExecution.CurrentOrderIndex == 0 {
@@ -70,11 +70,8 @@ func (e *OrderExecutor) executeNextOrder(commandExecution *models.CommandExecuti
 		}
 
 		now := time.Now()
-		commandExecution.Status = finalStatus
-		commandExecution.CompletedAt = &now
-		e.db.Save(commandExecution)
-
-		e.updateParentCommandStatus(&commandExecution.Command, finalCommandStatus, "")
+		repository.UpdateCommandExecutionStatus(e.db, commandExecution, finalStatus, &now)
+		repository.UpdateCommandStatus(e.db, &commandExecution.Command, finalCommandStatus, "")
 		e.sendFinalResponseToPLC(commandExecution.Command.CommandDefinition.CommandType, finalCommandStatus, "")
 
 		utils.Logger.Infof("Workflow completed for command execution ID: %d with status: %s", commandExecution.ID, finalStatus)
@@ -97,11 +94,8 @@ func (e *OrderExecutor) executeNextOrder(commandExecution *models.CommandExecuti
 		utils.Logger.Errorf("Workflow for CommandExecutionID %d will be terminated. Reason: %s", commandExecution.ID, errMsg)
 
 		now := time.Now()
-		commandExecution.Status = models.CommandExecutionStatusFailed
-		commandExecution.CompletedAt = &now
-		e.db.Save(commandExecution)
-
-		e.updateParentCommandStatus(&commandExecution.Command, models.StatusFailure, errMsg)
+		repository.UpdateCommandExecutionStatus(e.db, commandExecution, models.CommandExecutionStatusFailed, &now)
+		repository.UpdateCommandStatus(e.db, &commandExecution.Command, models.StatusFailure, errMsg)
 		e.sendFinalResponseToPLC(commandExecution.Command.CommandDefinition.CommandType, "F", errMsg)
 		return fmt.Errorf(errMsg)
 	}
@@ -134,11 +128,8 @@ func (e *OrderExecutor) executeNextStep(execution *models.OrderExecution, templa
 	}
 
 	if currentOrderStep == nil {
-		execution.Status = models.OrderExecutionStatusCompleted
 		now := time.Now()
-		execution.CompletedAt = &now
-		e.db.Save(execution)
-		utils.Logger.Infof("Order execution completed successfully: %s", execution.OrderID)
+		repository.UpdateOrderExecutionStatus(e.db, execution, models.OrderExecutionStatusCompleted, &now)
 		e.triggerNextOrder(execution, true)
 		return
 	}
@@ -153,7 +144,6 @@ func (e *OrderExecutor) executeNextStep(execution *models.OrderExecution, templa
 	e.db.Create(stepExecution)
 
 	orderMsg := e.orderMessageHandler.BuildOrderMessage(execution, currentOrderStep)
-
 	e.initializeActionStatusInRedis(stepExecution, orderMsg)
 
 	if err := e.orderMessageHandler.SendOrder(orderMsg); err != nil {
@@ -166,11 +156,8 @@ func (e *OrderExecutor) executeNextStep(execution *models.OrderExecution, templa
 	if currentOrderStep.WaitForCompletion {
 		go e.waitForActionCompletion(stepExecution, execution, template, currentOrderStep.TimeoutSeconds)
 	} else {
-		stepExecution.Status = models.StepExecutionStatusFinished
-		stepExecution.Result = models.PreviousResultSuccess
 		now := time.Now()
-		stepExecution.CompletedAt = &now
-		e.db.Save(stepExecution)
+		repository.UpdateStepExecutionStatus(e.db, stepExecution, models.StepExecutionStatusFinished, models.PreviousResultSuccess, "", &now)
 		execution.CurrentStep++
 		e.db.Save(execution)
 		e.executeNextStep(execution, template)
@@ -180,9 +167,7 @@ func (e *OrderExecutor) executeNextStep(execution *models.OrderExecution, templa
 func (e *OrderExecutor) initializeActionStatusInRedis(stepExec *models.StepExecution, orderMsg *models.OrderMessage) {
 	ctx := context.Background()
 	redisKey := fmt.Sprintf("step_actions:%d", stepExec.ID)
-
 	e.redisClient.Del(ctx, redisKey)
-
 	pipe := e.redisClient.Pipeline()
 	for _, node := range orderMsg.Nodes {
 		for _, action := range node.Actions {
@@ -197,24 +182,15 @@ func (e *OrderExecutor) initializeActionStatusInRedis(stepExec *models.StepExecu
 
 func (e *OrderExecutor) handleStepFailure(step *models.StepExecution, order *models.OrderExecution, reason string) {
 	now := time.Now()
-	step.Status = models.StepExecutionStatusFailed
-	step.ErrorMessage = reason
-	step.CompletedAt = &now
-	e.db.Save(step)
-
-	order.Status = models.OrderExecutionStatusFailed
-	order.CompletedAt = &now
-	e.db.Save(order)
-	utils.Logger.Errorf("Order execution failed: %s. Reason: %s", order.OrderID, reason)
+	repository.UpdateStepExecutionStatus(e.db, step, models.StepExecutionStatusFailed, "", reason, &now)
+	repository.UpdateOrderExecutionStatus(e.db, order, models.OrderExecutionStatusFailed, &now)
 
 	e.redisClient.Del(context.Background(), fmt.Sprintf("step_actions:%d", step.ID))
-
 	e.triggerNextOrder(order, false)
 }
 
 func (e *OrderExecutor) triggerNextOrder(completedOrder *models.OrderExecution, success bool) {
 	var cmdExec models.CommandExecution
-	// (수정) 여기서도 모든 관련 정보를 Preload
 	e.db.Preload("Command.CommandDefinition").First(&cmdExec, completedOrder.CommandExecutionID)
 
 	var currentMapping models.CommandOrderMapping
@@ -240,7 +216,7 @@ func (e *OrderExecutor) sendFinalResponseToPLC(command, status, errMsg string) {
 	} else if status == models.StatusFailure {
 		finalStatus = "F"
 	} else {
-		finalStatus = status // "R" for Rejected, etc.
+		finalStatus = status // "R" for Rejected
 	}
 
 	response := fmt.Sprintf("%s:%s", command, finalStatus)
@@ -256,16 +232,6 @@ func (e *OrderExecutor) sendFinalResponseToPLC(command, status, errMsg string) {
 	} else {
 		utils.Logger.Infof("FINAL response sent successfully to PLC: %s", response)
 	}
-}
-
-func (e *OrderExecutor) updateParentCommandStatus(command *models.Command, status, errMsg string) {
-	command.Status = status
-	if errMsg != "" {
-		command.ErrorMessage = errMsg
-	}
-	now := time.Now()
-	command.ResponseTime = &now
-	e.db.Save(command)
 }
 
 func (e *OrderExecutor) waitForActionCompletion(step *models.StepExecution, order *models.OrderExecution, template *models.OrderTemplate, timeoutSeconds int) {
@@ -294,7 +260,7 @@ func (e *OrderExecutor) HandleOrderStateUpdate(stateMsg *models.RobotStateMessag
 	var stepExecution models.StepExecution
 	err := e.db.Joins("JOIN order_executions ON step_executions.execution_id = order_executions.id").
 		Where("order_executions.order_id = ? AND step_executions.status = ?", stateMsg.OrderID, models.StepExecutionStatusRunning).
-		Preload("Execution.Template.OrderSteps.StepActionMappings.ActionTemplate").
+		Preload("Execution.Template").
 		First(&stepExecution).Error
 	if err != nil {
 		return
@@ -325,15 +291,8 @@ func (e *OrderExecutor) HandleOrderStateUpdate(stateMsg *models.RobotStateMessag
 		return
 	}
 
-	utils.Logger.Infof("All actions for step %d are FINISHED. Marking step as completed.", stepExecution.StepOrder)
-
-	stepExecution.Status = models.StepExecutionStatusFinished
-	stepExecution.Result = stepResult
 	now := time.Now()
-	stepExecution.CompletedAt = &now
-	e.db.Save(&stepExecution)
-
-	utils.Logger.Infof("Step execution record %d updated to FINISHED.", stepExecution.ID)
+	repository.UpdateStepExecutionStatus(e.db, &stepExecution, models.StepExecutionStatusFinished, models.PreviousResultSuccess, "", &now)
 
 	execution := stepExecution.Execution
 	execution.CurrentStep++
@@ -346,10 +305,8 @@ func (e *OrderExecutor) CancelAllRunningOrders() error {
 	e.db.Where("status = ?", models.CommandExecutionStatusRunning).Find(&commandExecutions)
 
 	for _, cmdExec := range commandExecutions {
-		cmdExec.Status = models.CommandExecutionStatusCancelled
 		now := time.Now()
-		cmdExec.CompletedAt = &now
-		e.db.Save(&cmdExec)
+		repository.UpdateCommandExecutionStatus(e.db, &cmdExec, models.CommandExecutionStatusCancelled, &now)
 
 		var orderExecutions []models.OrderExecution
 		e.db.Where("command_execution_id = ? AND status IN ?",
@@ -357,24 +314,17 @@ func (e *OrderExecutor) CancelAllRunningOrders() error {
 			Find(&orderExecutions)
 
 		for _, orderExec := range orderExecutions {
-			orderExec.Status = models.OrderExecutionStatusFailed
 			nowOrderExec := time.Now()
-			orderExec.CompletedAt = &nowOrderExec
-			e.db.Save(&orderExec)
+			repository.UpdateOrderExecutionStatus(e.db, &orderExec, models.OrderExecutionStatusFailed, &nowOrderExec)
 
 			var stepExecutions []models.StepExecution
 			e.db.Where("execution_id = ? AND status = ?", orderExec.ID, models.StepExecutionStatusRunning).
 				Find(&stepExecutions)
 			for _, stepExec := range stepExecutions {
-				stepExec.Status = models.StepExecutionStatusFailed
 				nowStepExec := time.Now()
-				stepExec.CompletedAt = &nowStepExec
-				stepExec.ErrorMessage = "Cancelled by order cancel command"
-				e.db.Save(&stepExec)
+				repository.UpdateStepExecutionStatus(e.db, &stepExec, models.StepExecutionStatusFailed, "", "Cancelled by order cancel command", &nowStepExec)
 			}
-			utils.Logger.Infof("Order execution cancelled: %s", orderExec.OrderID)
 		}
-		utils.Logger.Infof("Command execution cancelled: %d", cmdExec.ID)
 	}
 	return nil
 }
@@ -395,7 +345,7 @@ func (e *OrderExecutor) determineStepResultFromMap(statuses map[string]string, s
 			return models.PreviousResultFailure
 		case models.ActionStatusFinished:
 			continue
-		default: // WAITING, RUNNING, INITIALIZING, PAUSED 등
+		default:
 			allFinished = false
 		}
 	}
