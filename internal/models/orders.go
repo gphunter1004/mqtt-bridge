@@ -1,11 +1,19 @@
-// internal/models/orders.go (최종 수정본)
+// internal/models/orders.go (현재 버전)
 package models
 
 import (
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
 )
+
+// Float64 커스텀 타입 - 항상 소수점이 포함되도록 JSON 마샬링
+type Float64 float64
+
+func (f Float64) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf("%.1f", float64(f))), nil
+}
 
 // CommandOrderMapping PLC 명령과 오더 템플릿의 매핑. 조건부 분기 로직 포함.
 type CommandOrderMapping struct {
@@ -204,7 +212,7 @@ type StepExecution struct {
 	Execution OrderExecution `gorm:"foreignKey:ExecutionID"`
 }
 
-// Order Message 구조체들 (MQTT 전송용)
+// Order Message 구조체들 (MQTT 전송용) - Float64 타입 사용으로 수정
 type OrderMessage struct {
 	HeaderID      int64       `json:"headerId"`
 	Timestamp     string      `json:"timestamp"`
@@ -226,12 +234,13 @@ type OrderNode struct {
 	Actions      []OrderAction `json:"actions"`
 }
 
+// NodePosition 구조체 - Float64 타입 사용으로 수정
 type NodePosition struct {
-	X                     float64 `json:"x"`
-	Y                     float64 `json:"y"`
-	Theta                 float64 `json:"theta"`
-	AllowedDeviationXY    float64 `json:"allowedDeviationXY"`
-	AllowedDeviationTheta float64 `json:"allowedDeviationTheta"`
+	X                     Float64 `json:"x"`
+	Y                     Float64 `json:"y"`
+	Theta                 Float64 `json:"theta"`
+	AllowedDeviationXY    Float64 `json:"allowedDeviationXY"`
+	AllowedDeviationTheta Float64 `json:"allowedDeviationTheta"`
 	MapID                 string  `json:"mapId"`
 }
 
@@ -248,15 +257,16 @@ type OrderActionParameter struct {
 	Value interface{} `json:"value"`
 }
 
+// OrderEdge 구조체 - Float64 타입 사용으로 수정
 type OrderEdge struct {
 	EdgeID          string  `json:"edgeId"`
 	SequenceID      int     `json:"sequenceId"`
 	StartNodeID     string  `json:"startNodeId"`
 	EndNodeID       string  `json:"endNodeId"`
-	MaxSpeed        float64 `json:"maxSpeed,omitempty"`
-	MaxHeight       float64 `json:"maxHeight,omitempty"`
-	MinHeight       float64 `json:"minHeight,omitempty"`
-	Orientation     float64 `json:"orientation,omitempty"`
+	MaxSpeed        Float64 `json:"maxSpeed,omitempty"`
+	MaxHeight       Float64 `json:"maxHeight,omitempty"`
+	MinHeight       Float64 `json:"minHeight,omitempty"`
+	Orientation     Float64 `json:"orientation,omitempty"`
 	Direction       string  `json:"direction,omitempty"`
 	RotationAllowed bool    `json:"rotationAllowed"`
 	Released        bool    `json:"released"`

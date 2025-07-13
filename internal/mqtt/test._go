@@ -1,4 +1,4 @@
-// internal/mqtt/order_message_handler.go (완전한 버전)
+// internal/mqtt/test.go (완전한 버전)
 package mqtt
 
 import (
@@ -100,34 +100,24 @@ func NewOrderSubscriber(mqttClient mqtt.Client, cfg *config.Config) *OrderSubscr
 func (s *OrderSubscriber) Subscribe() error {
 	orderTopic := fmt.Sprintf("meili/v2/%s/%s/order", s.config.RobotManufacturer, s.config.RobotSerialNumber)
 
-	// 구독 시도 로그 추가
-	utils.Logger.Infof("🔔 SUBSCRIBING TO: %s", orderTopic)
-
 	token := s.mqttClient.Subscribe(orderTopic, 0, s.handleOrderMessage)
 	if token.Wait() && token.Error() != nil {
-		utils.Logger.Errorf("❌ SUBSCRIPTION FAILED: %v", token.Error())
 		return token.Error()
 	}
 
-	utils.Logger.Infof("✅ SUBSCRIPTION SUCCESS: %s", orderTopic)
 	return nil
 }
 
-// handleOrderMessage 수신된 order 메시지를 로그로 출력 (검증용) - 중복 방지
+// handleOrderMessage 수신된 order 메시지를 로그로 출력 (검증용)
 func (s *OrderSubscriber) handleOrderMessage(client mqtt.Client, msg mqtt.Message) {
-	// 호출 횟수 카운터 로그 추가
-	utils.Logger.Infof("📞 HANDLER CALLED: %s (MessageID: %d)", msg.Topic(), msg.MessageID())
-
 	// 중복 메시지 필터링
 	var orderData map[string]interface{}
 	if err := json.Unmarshal(msg.Payload(), &orderData); err != nil {
-		utils.Logger.Errorf("❌ JSON PARSE ERROR: %v", err)
 		return
 	}
 
 	orderID, ok := orderData["orderId"].(string)
 	if !ok {
-		utils.Logger.Warnf("⚠️ NO ORDER ID FOUND")
 		return
 	}
 
@@ -135,7 +125,6 @@ func (s *OrderSubscriber) handleOrderMessage(client mqtt.Client, msg mqtt.Messag
 
 	// 같은 orderID가 1초 이내에 들어오면 무시
 	if s.lastOrderID == orderID && now.Sub(s.lastReceived) < time.Second {
-		utils.Logger.Infof("🚫 DUPLICATE FILTERED: %s (within 1s)", orderID)
 		return
 	}
 
@@ -152,21 +141,17 @@ type OrderMessageHandler struct {
 }
 
 func NewOrderMessageHandler(mqttClient mqtt.Client, cfg *config.Config) *OrderMessageHandler {
-	utils.Logger.Infof("🏗️ CREATING OrderMessageHandler")
-
 	handler := &OrderMessageHandler{
 		mqttClient: mqttClient,
 		config:     cfg,
 	}
 
 	// Order Subscriber 생성 및 구독 시작
-	utils.Logger.Infof("🔧 CREATING OrderSubscriber")
 	handler.orderSubscriber = NewOrderSubscriber(mqttClient, cfg)
 	if err := handler.orderSubscriber.Subscribe(); err != nil {
 		utils.Logger.Errorf("Failed to start order subscription: %v", err)
 	}
 
-	utils.Logger.Infof("✅ OrderMessageHandler CREATED")
 	return handler
 }
 

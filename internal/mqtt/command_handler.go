@@ -1,11 +1,11 @@
-// internal/mqtt/command_handler.go (최종 수정본)
+// internal/mqtt/command_handler.go (디버깅 로그 추가)
 package mqtt
 
 import (
 	"fmt"
 	"mqtt-bridge/internal/config"
 	"mqtt-bridge/internal/models"
-	"mqtt-bridge/internal/repository" // (수정) repository 패키지 import
+	"mqtt-bridge/internal/repository"
 	"mqtt-bridge/internal/utils"
 	"strings"
 	"sync"
@@ -22,25 +22,34 @@ type CommandHandler struct {
 	mqttClient          mqtt.Client
 	config              *config.Config
 	orderExecutor       *OrderExecutor
-	orderMessageHandler *OrderMessageHandler // OrderMessageHandler 추가
+	orderMessageHandler *OrderMessageHandler
 	processingMutex     sync.Mutex
 	isProcessing        bool
 }
 
 func NewCommandHandler(db *gorm.DB, redisClient *redis.Client, mqttClient mqtt.Client, cfg *config.Config) *CommandHandler {
+	utils.Logger.Infof("🏗️ CREATING CommandHandler: %p", &CommandHandler{})
+
 	orderExecutor := NewOrderExecutor(db, redisClient, mqttClient, cfg)
-	return &CommandHandler{
+	handler := &CommandHandler{
 		db:                  db,
 		redisClient:         redisClient,
 		mqttClient:          mqttClient,
 		config:              cfg,
 		orderExecutor:       orderExecutor,
-		orderMessageHandler: orderExecutor.orderMessageHandler, // OrderExecutor에서 가져옴
+		orderMessageHandler: orderExecutor.orderMessageHandler,
 	}
+
+	utils.Logger.Infof("✅ CommandHandler CREATED: %p", handler)
+	return handler
 }
 
 // HandleCommand PLC 명령 처리
 func (h *CommandHandler) HandleCommand(client mqtt.Client, msg mqtt.Message) {
+	utils.Logger.Infof("🎯 COMMAND HANDLER CALLED: %p", h)
+	utils.Logger.Infof("📨 RAW COMMAND: %s (MessageID: %d, QoS: %d)", string(msg.Payload()), msg.MessageID(), msg.Qos())
+	utils.Logger.Infof("🕒 TIMESTAMP: %s", time.Now().Format("2006-01-02 15:04:05.000"))
+
 	commandStr := strings.TrimSpace(string(msg.Payload()))
 	utils.Logger.Infof("Received command from PLC: %s", commandStr)
 
@@ -109,7 +118,7 @@ func (h *CommandHandler) HandleCommand(client mqtt.Client, msg mqtt.Message) {
 		h.processingMutex.Unlock()
 		errMsg := "Command rejected: Another command is currently processing"
 		utils.Logger.Warnf("Command %s rejected: %s", commandStr, errMsg)
-		h.orderExecutor.sendFinalResponseToPLC(commandStr, "R", errMsg) // R for Rejected
+		h.orderExecutor.sendFinalResponseToPLC(commandStr, "R", errMsg)
 		now := time.Now()
 		command := &models.Command{
 			CommandDefinitionID: cmdDef.ID,
