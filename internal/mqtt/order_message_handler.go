@@ -34,13 +34,13 @@ func (h *OrderMessageHandler) BuildOrderMessage(execution *models.OrderExecution
 	edges := h.buildOrderEdges(step)
 
 	orderMsg := &models.OrderMessage{
-		HeaderID:      utils.GetNextHeaderID(), // 수정: 1씩 증가하는 ID 사용
+		HeaderID:      utils.GetNextHeaderID(),
 		Timestamp:     time.Now().Format(time.RFC3339Nano),
 		Version:       "2.0.0",
 		Manufacturer:  h.config.RobotManufacturer,
 		SerialNumber:  h.config.RobotSerialNumber,
 		OrderID:       execution.OrderID,
-		OrderUpdateID: 0, // 수정: 항상 0으로 고정
+		OrderUpdateID: 0, // VDA5050 2.0.0 an up, OrderUpdateID must be incremented for each update. Initial order is 0
 		Nodes:         []models.OrderNode{node},
 		Edges:         edges,
 	}
@@ -49,10 +49,10 @@ func (h *OrderMessageHandler) BuildOrderMessage(execution *models.OrderExecution
 }
 
 // SendOrder 로봇에 오더 전송
-func (h *OrderMessageHandler) SendOrder(orderMsg *models.OrderMessage) error {
+func (h *OrderMessageHandler) SendOrder(orderPayload interface{}) error {
 	topic := fmt.Sprintf("meili/v2/%s/%s/order", h.config.RobotManufacturer, h.config.RobotSerialNumber)
 
-	msgData, err := json.Marshal(orderMsg)
+	msgData, err := json.Marshal(orderPayload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal order message: %v", err)
 	}
@@ -65,7 +65,7 @@ func (h *OrderMessageHandler) SendOrder(orderMsg *models.OrderMessage) error {
 		return fmt.Errorf("MQTT publish failed: %v", token.Error())
 	}
 
-	utils.Logger.Infof("Order sent successfully: %s", orderMsg.OrderID)
+	utils.Logger.Info("Order sent successfully")
 	return nil
 }
 
@@ -74,7 +74,7 @@ func (h *OrderMessageHandler) SendCancelOrder() error {
 	actionID := h.generateActionID()
 
 	request := map[string]interface{}{
-		"headerId":     utils.GetNextHeaderID(), // 수정: 1씩 증가하는 ID 사용
+		"headerId":     utils.GetNextHeaderID(),
 		"timestamp":    time.Now().Format(time.RFC3339Nano),
 		"version":      "2.0.0",
 		"manufacturer": h.config.RobotManufacturer,
@@ -108,6 +108,66 @@ func (h *OrderMessageHandler) SendCancelOrder() error {
 	return nil
 }
 
+// SendDirectActionOrder :I 또는 :T 명령을 처리하는 새로운 함수
+func (h *OrderMessageHandler) SendDirectActionOrder(baseCommand string, commandType rune) error {
+	var actionType, paramKey string
+
+	switch commandType {
+	case 'I':
+		actionType = "Roboligent Robin - Inference"
+		paramKey = "inference_name"
+	case 'T':
+		actionType = "Roboligent Robin - Follow Trajectory"
+		paramKey = "trajectory_name"
+	default:
+		return fmt.Errorf("invalid direct action command type: %c", commandType)
+	}
+
+	// map[string]interface{}를 사용하여 JSON 구조를 명시적으로 생성
+	orderMap := map[string]interface{}{
+		"headerId":      utils.GetNextHeaderID(),
+		"timestamp":     time.Now().Format(time.RFC3339Nano),
+		"version":       "2.0.0",
+		"manufacturer":  h.config.RobotManufacturer,
+		"serialNumber":  h.config.RobotSerialNumber,
+		"orderId":       h.GenerateOrderID(),
+		"orderUpdateId": 0,
+		"nodes": []map[string]interface{}{
+			{
+				"nodeId":      h.GenerateNodeID(),
+				"sequenceId":  1,
+				"released":    true,
+				"description": fmt.Sprintf("Direct action for command %s", baseCommand),
+				"nodePosition": map[string]interface{}{
+					"x":                     float64(0.0), // float64 타입 명시
+					"y":                     float64(0.0), // float64 타입 명시
+					"theta":                 float64(0.0), // float64 타입 명시
+					"allowedDeviationXY":    float64(0.0), // float64 타입 명시
+					"allowedDeviationTheta": float64(0.0), // float64 타입 명시
+					"mapId":                 "",
+				},
+				"actions": []map[string]interface{}{
+					{
+						"actionType":        actionType,
+						"actionId":          h.GenerateActionID(),
+						"blockingType":      "NONE",
+						"actionDescription": fmt.Sprintf("Execute %s for %s", actionType, baseCommand),
+						"actionParameters": []map[string]interface{}{
+							{
+								"key":   paramKey,
+								"value": baseCommand,
+							},
+						},
+					},
+				},
+			},
+		},
+		"edges": []map[string]interface{}{}, // 엣지 없음
+	}
+
+	return h.SendOrder(orderMap)
+}
+
 // buildOrderNode 오더 노드 생성
 func (h *OrderMessageHandler) buildOrderNode(step *models.OrderStep) models.OrderNode {
 	nodeID := h.GenerateNodeID()
@@ -130,7 +190,6 @@ func (h *OrderMessageHandler) buildOrderNode(step *models.OrderStep) models.Orde
 		nodePos.MapID = step.NodeTemplate.MapID
 	}
 
-	// StepActionMappings를 ExecutionOrder 순서로 정렬
 	sort.Slice(step.StepActionMappings, func(i, j int) bool {
 		return step.StepActionMappings[i].ExecutionOrder < step.StepActionMappings[j].ExecutionOrder
 	})
