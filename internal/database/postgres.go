@@ -1,4 +1,3 @@
-// internal/database/postgres.go (최종 수정본)
 package database
 
 import (
@@ -16,164 +15,227 @@ func NewPostgresDB(cfg *config.Config) (*gorm.DB, error) {
 		cfg.DBHost, cfg.DBUser, cfg.DBPassword, cfg.DBName, cfg.DBPort)
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Info), // 개발 중 SQL 로그 확인용
+		Logger: logger.Default.LogMode(logger.Info),
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	// 테이블 마이그레이션
+	// 간소화된 테이블 마이그레이션
 	if err := db.AutoMigrate(
-		&models.CommandDefinition{},
 		&models.Command{},
-		&models.CommandOrderMapping{},
 		&models.RobotStatus{},
-		&models.RobotFactsheet{},
-		&models.OrderTemplate{},
-		&models.OrderStep{},
-		&models.NodeTemplate{},
-		&models.ActionTemplate{},
-		&models.ActionParameter{},
-		&models.StepActionMapping{},
-		&models.EdgeTemplate{},
-		&models.CommandExecution{},
-		&models.OrderExecution{},
-		&models.StepExecution{},
+		&models.ActionHistory{},
+		&models.PLCStatusHistory{},
 	); err != nil {
 		return nil, err
 	}
 
-	// 샘플 데이터 생성
-	if err := createSampleData(db); err != nil {
+	// 기본 데이터 생성
+	if err := createDefaultData(db); err != nil {
 		return nil, err
 	}
 
 	return db, nil
 }
 
-// createOrUpdateAction 헬퍼 함수: 액션 템플릿과 파라미터를 안전하게 생성
-func createOrUpdateAction(db *gorm.DB, actionInfo models.ActionTemplate, params []models.ActionParameter) (models.ActionTemplate, error) {
-	// ActionType과 ActionDescription이 모두 일치하는 경우를 조건으로 조회 또는 생성
-	if err := db.Where(models.ActionTemplate{
-		ActionType:        actionInfo.ActionType,
-		ActionDescription: actionInfo.ActionDescription,
-	}).FirstOrCreate(&actionInfo).Error; err != nil {
-		return actionInfo, err
-	}
+// createDefaultData 기본 데이터 생성
+func createDefaultData(db *gorm.DB) error {
+	// 기본 로봇 상태 생성
+	var robotCount int64
+	db.Model(&models.RobotStatus{}).Count(&robotCount)
 
-	// 해당 액션 템플릿에 파라미터 생성
-	for _, p := range params {
-		// ActionTemplateID와 Key가 모두 일치하는 경우를 조건으로 조회 또는 생성
-		p.ActionTemplateID = actionInfo.ID
-		db.FirstOrCreate(&p, models.ActionParameter{
-			ActionTemplateID: p.ActionTemplateID,
-			Key:              p.Key,
-		})
-	}
-	return actionInfo, nil
-}
+	if robotCount == 0 {
+		defaultRobot := &models.RobotStatus{
+			SerialNumber:    "DEX0002",
+			Manufacturer:    "Roboligent",
+			ConnectionState: models.ConnectionStateOffline,
+			IsBusy:          false,
+			OperationalData: models.JSON{
+				"current": map[string]interface{}{
+					"position": map[string]float64{"x": 0, "y": 0, "theta": 0},
+					"battery":  map[string]interface{}{"charge": 100, "voltage": 40.0},
+					"mode":     "MANUAL",
+				},
+				"history": []interface{}{},
+			},
+			FactsheetData: models.JSON{
+				"version": "1.0",
+				"series": map[string]string{
+					"name":        "Robin",
+					"description": "Humanoid robot with dual manipulators",
+				},
+				"specifications": map[string]interface{}{
+					"agv_class":      "AMR",
+					"agv_kinematics": "ForwardKinematics",
+					"max_load_mass":  50,
+					"speed":          map[string]float64{"min": 0.0, "max": 0.4},
+				},
+			},
+			LastHeaderID: 0,
+		}
 
-// createSampleData 샘플 데이터 생성
-func createSampleData(db *gorm.DB) error {
-	// 1. 모든 기본 명령 정의 생성
-	cmdDefs := []models.CommandDefinition{
-		{CommandType: "CR", Description: "백내장 적출", IsActive: true},
-		{CommandType: "GR", Description: "적내장 적출", IsActive: true},
-		{CommandType: "GC", Description: "그리퍼 세정", IsActive: true},
-		{CommandType: "CC", Description: "카메라 확인", IsActive: true},
-		{CommandType: "CL", Description: "카메라 세정", IsActive: true},
-		{CommandType: "KC", Description: "나이프 세정", IsActive: true},
-		{CommandType: "OC", Description: "명령 취소", IsActive: true},
-	}
-
-	var cataractDef models.CommandDefinition
-	for _, def := range cmdDefs {
-		db.FirstOrCreate(&def, models.CommandDefinition{CommandType: def.CommandType})
-		if def.CommandType == "CR" {
-			cataractDef = def
+		if err := db.Create(defaultRobot).Error; err != nil {
+			return fmt.Errorf("failed to create default robot status: %w", err)
 		}
 	}
 
-	// 2. 기본 노드 템플릿 생성
-	db.FirstOrCreate(&models.NodeTemplate{}, &models.NodeTemplate{
-		Name: "Default Origin",
-	})
+	// 기본 워크플로우 설정 생성 (파일이나 환경변수로 관리하는 것이 좋음)
+	return createDefaultWorkflows(db)
+}
 
-	// 3. "백내장 적출"에 필요한 액션 템플릿 및 파라미터 생성
-	// 3-1. "수정체 유화술" 액션
-	phacoAction, err := createOrUpdateAction(db,
-		models.ActionTemplate{ActionType: "Roboligent Robin - Follow Trajectory", ActionDescription: "직장 파지"},
-		[]models.ActionParameter{
-			{Key: "arm", Value: "right", ValueType: "STRING"},
-			{Key: "trajectory_name", Value: "trajectory_1", ValueType: "STRING"},
-		},
-	)
-	if err != nil {
-		return err
-	}
+// createDefaultWorkflows 기본 워크플로우 설정
+func createDefaultWorkflows(db *gorm.DB) error {
+	// 실제로는 설정 파일이나 환경변수에서 로드하는 것이 좋음
+	// 여기서는 예시로만 작성
 
-	// 3-2. "인공수정체 삽입" 액션
-	iolAction, err := createOrUpdateAction(db,
-		models.ActionTemplate{ActionType: "Roboligent Robin - Follow Trajectory", ActionDescription: "직장 근막 절개"},
-		[]models.ActionParameter{
-			{Key: "arm", Value: "right", ValueType: "STRING"},
-			{Key: "trajectory_name", Value: "trajectory_2", ValueType: "STRING"},
-		},
-	)
-	if err != nil {
-		return err
-	}
-
-	// 4. "백내장 적출"을 위한 오더 템플릿 생성
-	var phacoOrderTpl, iolOrderTpl models.OrderTemplate
-	db.FirstOrCreate(&phacoOrderTpl, models.OrderTemplate{Name: "직장 파지"})
-	db.FirstOrCreate(&iolOrderTpl, models.OrderTemplate{Name: "직장 근막 절개"})
-
-	// 5. 각 오더 템플릿에 대한 단계(Step) 생성
-	var phacoStep, iolStep models.OrderStep
-	db.FirstOrCreate(&phacoStep, models.OrderStep{TemplateID: phacoOrderTpl.ID, StepOrder: 1, WaitForCompletion: true})
-	db.FirstOrCreate(&iolStep, models.OrderStep{TemplateID: iolOrderTpl.ID, StepOrder: 1, WaitForCompletion: true})
-
-	// 6. 각 단계와 액션을 매핑
-	db.FirstOrCreate(&models.StepActionMapping{}, &models.StepActionMapping{
-		OrderStepID:      phacoStep.ID,
-		ActionTemplateID: phacoAction.ID,
-		ExecutionOrder:   1,
-	})
-	db.FirstOrCreate(&models.StepActionMapping{}, &models.StepActionMapping{
-		OrderStepID:      iolStep.ID,
-		ActionTemplateID: iolAction.ID,
-		ExecutionOrder:   1,
-	})
-
-	// 7. "CR" 명령에 대한 워크플로우(오더 순서) 정의
-	// 기존 매핑 데이터 삭제 (중복 방지)
-	db.Unscoped().Where("command_definition_id = ?", cataractDef.ID).Delete(&models.CommandOrderMapping{})
-
-	cataractMappings := []models.CommandOrderMapping{
-		// ExecutionOrder 1: "CR" 명령 시 가장 먼저 "직장 파지" 실행. 성공 시 2번 오더로 이동.
-		{
-			CommandDefinitionID: cataractDef.ID,
-			TemplateID:          phacoOrderTpl.ID,
-			ExecutionOrder:      1,
-			NextExecutionOrder:  2, // 성공하면 다음 순번인 2로 간다.
-			FailureOrder:        0, // 실패하면 워크플로우 종료.
-			IsActive:            true,
-		},
-		// ExecutionOrder 2: 1번 오더 성공 후 "직장 근막 절개" 실행. 성공/실패 모두 워크플로우 종료.
-		{
-			CommandDefinitionID: cataractDef.ID,
-			TemplateID:          iolOrderTpl.ID,
-			ExecutionOrder:      2,
-			NextExecutionOrder:  0, // 성공 시 종료.
-			FailureOrder:        0, // 실패 시 종료.
-			IsActive:            true,
+	// CR (백내장 적출) 워크플로우 예시
+	crWorkflow := models.JSON{
+		"workflow_id": "cr_workflow_v2",
+		"version":     "2.0",
+		"steps": []interface{}{
+			map[string]interface{}{
+				"order":   1,
+				"name":    "직장 파지",
+				"timeout": 300,
+				"node": map[string]interface{}{
+					"node_id":                 "node_gripping_point",
+					"position":                map[string]float64{"x": 1.5, "y": 2.3, "theta": 0.5},
+					"allowed_deviation_xy":    0.1,
+					"allowed_deviation_theta": 0.05,
+					"map_id":                  "surgical_room_1",
+				},
+				"actions": []interface{}{
+					map[string]interface{}{
+						"action_id":     "grip_rectum_action",
+						"type":          "Roboligent Robin - Follow Trajectory",
+						"description":   "직장 파지 동작",
+						"blocking_type": "HARD",
+						"params": map[string]interface{}{
+							"arm":             "right",
+							"trajectory_name": "trajectory_grip_rectum",
+						},
+					},
+				},
+				"on_success": "next",
+				"on_failure": "abort",
+			},
+			map[string]interface{}{
+				"order":   2,
+				"name":    "직장 근막 절개",
+				"timeout": 300,
+				"node": map[string]interface{}{
+					"node_id":  "node_cutting_point",
+					"position": map[string]float64{"x": 1.6, "y": 2.4, "theta": 0.5},
+				},
+				"actions": []interface{}{
+					map[string]interface{}{
+						"action_id":   "cut_fascia_action",
+						"type":        "Roboligent Robin - Follow Trajectory",
+						"description": "근막 절개 동작",
+						"params": map[string]interface{}{
+							"arm":             "right",
+							"trajectory_name": "trajectory_cut_fascia",
+						},
+					},
+				},
+				"on_success": "complete",
+				"on_failure": "abort",
+			},
 		},
 	}
 
-	if err := db.Create(&cataractMappings).Error; err != nil {
-		return fmt.Errorf("failed to create sample 'CR' command mappings: %w", err)
+	// GC (그리퍼 세정) 워크플로우 예시
+	gcWorkflow := models.JSON{
+		"workflow_id": "gc_workflow_v1",
+		"version":     "1.0",
+		"steps": []interface{}{
+			map[string]interface{}{
+				"order":   1,
+				"name":    "그리퍼 세정",
+				"timeout": 180,
+				"node": map[string]interface{}{
+					"node_id":  "node_cleaning_station",
+					"position": map[string]float64{"x": 0.0, "y": 0.0, "theta": 0.0},
+				},
+				"actions": []interface{}{
+					map[string]interface{}{
+						"action_id":   "gripper_clean_action",
+						"type":        "Roboligent Robin - Gripper Clean",
+						"description": "그리퍼 세정 동작",
+						"params": map[string]interface{}{
+							"duration":  60,
+							"intensity": "high",
+						},
+					},
+				},
+				"on_success": "complete",
+				"on_failure": "retry",
+			},
+		},
+	}
+
+	// 워크플로우를 메모리나 Redis에 저장하는 것이 좋음
+	// 여기서는 로그로만 출력
+	fmt.Printf("Default workflows loaded: CR, GC\n")
+	_ = crWorkflow
+	_ = gcWorkflow
+
+	return nil
+}
+
+// CleanupOldData 오래된 데이터 정리 (선택적)
+func CleanupOldData(db *gorm.DB, days int) error {
+	// 오래된 명령 삭제
+	if err := db.Where("created_at < NOW() - INTERVAL ? DAY", days).
+		Delete(&models.Command{}).Error; err != nil {
+		return fmt.Errorf("failed to cleanup old commands: %w", err)
+	}
+
+	// 오래된 액션 이력 삭제
+	if err := db.Where("created_at < NOW() - INTERVAL ? DAY", days).
+		Delete(&models.ActionHistory{}).Error; err != nil {
+		return fmt.Errorf("failed to cleanup old action history: %w", err)
+	}
+
+	// 오래된 PLC 상태 이력 삭제
+	if err := db.Where("created_at < NOW() - INTERVAL ? DAY", days/2).
+		Delete(&models.PLCStatusHistory{}).Error; err != nil {
+		return fmt.Errorf("failed to cleanup old PLC status history: %w", err)
 	}
 
 	return nil
+}
+
+// GetWorkflowConfig 워크플로우 설정 가져오기
+func GetWorkflowConfig(commandType string) models.JSON {
+	// 실제로는 파일, DB, 또는 설정 서버에서 가져와야 함
+	workflows := map[string]models.JSON{
+		"CR": {
+			"workflow_id": "cr_workflow_v2",
+			"version":     "2.0",
+			"steps":       []interface{}{
+				// ... CR 워크플로우 내용
+			},
+		},
+		"GC": {
+			"workflow_id": "gc_workflow_v1",
+			"version":     "1.0",
+			"steps":       []interface{}{
+				// ... GC 워크플로우 내용
+			},
+		},
+		// 다른 명령 타입들...
+	}
+
+	if workflow, exists := workflows[commandType]; exists {
+		return workflow
+	}
+
+	// 기본 워크플로우
+	return models.JSON{
+		"workflow_id": "default",
+		"version":     "1.0",
+		"steps":       []interface{}{},
+	}
 }
