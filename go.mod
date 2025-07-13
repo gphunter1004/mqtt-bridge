@@ -5,7 +5,6 @@ go 1.23
 require (
 	github.com/eclipse/paho.mqtt.golang v1.4.3
 	github.com/go-redis/redis/v8 v8.11.5
-	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
 	github.com/sirupsen/logrus v1.9.3
 	gorm.io/driver/postgres v1.5.4
