@@ -1,4 +1,4 @@
-// internal/mqtt/handler.go (Corrected)
+// internal/mqtt/handler.go (수정된 버전)
 package mqtt
 
 import (
@@ -49,6 +49,8 @@ func (h *MessageHandler) HandleRobotState(client mqtt.Client, msg mqtt.Message) 
 	if json.Unmarshal(msg.Payload(), &stateMsg) == nil {
 		// The order executor listens for state changes to progress the workflow.
 		h.orderExecutor.HandleOrderStateUpdate(&stateMsg)
+		// Direct command state update handling (새로 추가)
+		h.commandHandler.HandleDirectCommandStateUpdate(&stateMsg)
 		// The position handler checks if the robot's position needs initialization.
 		h.positionHandler.CheckAndRequestInitPosition(&stateMsg)
 	}

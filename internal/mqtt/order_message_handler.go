@@ -1,4 +1,4 @@
-// internal/mqtt/order_message_handler.go (완전한 버전)
+// internal/mqtt/order_message_handler.go (수정된 버전)
 package mqtt
 
 import (
@@ -188,8 +188,8 @@ func (h *OrderMessageHandler) BuildOrderMessage(execution *models.OrderExecution
 	}
 }
 
-// SendDirectActionOrder :I 또는 :T 명령을 처리하는 함수
-func (h *OrderMessageHandler) SendDirectActionOrder(baseCommand string, commandType rune) error {
+// SendDirectActionOrder :I 또는 :T 명령을 처리하는 함수 (orderID 반환)
+func (h *OrderMessageHandler) SendDirectActionOrder(baseCommand string, commandType rune) (string, error) {
 	var actionType, paramKey string
 
 	switch commandType {
@@ -200,8 +200,10 @@ func (h *OrderMessageHandler) SendDirectActionOrder(baseCommand string, commandT
 		actionType = "Roboligent Robin - Follow Trajectory"
 		paramKey = "trajectory_name"
 	default:
-		return fmt.Errorf("invalid direct action command type: %c", commandType)
+		return "", fmt.Errorf("invalid direct action command type: %c", commandType)
 	}
+
+	orderID := h.GenerateOrderID()
 
 	// 구조체를 사용하여 커스텀 마샬링 적용
 	directOrder := DirectOrderMessage{
@@ -210,7 +212,7 @@ func (h *OrderMessageHandler) SendDirectActionOrder(baseCommand string, commandT
 		Version:       "2.0.0",
 		Manufacturer:  h.config.RobotManufacturer,
 		SerialNumber:  h.config.RobotSerialNumber,
-		OrderID:       h.GenerateOrderID(),
+		OrderID:       orderID,
 		OrderUpdateID: 0,
 		Nodes: []DirectOrderNode{
 			{
@@ -245,7 +247,12 @@ func (h *OrderMessageHandler) SendDirectActionOrder(baseCommand string, commandT
 		Edges: []DirectOrderEdge{},
 	}
 
-	return h.SendOrder(directOrder)
+	err := h.SendOrder(directOrder)
+	if err != nil {
+		return "", err
+	}
+
+	return orderID, nil
 }
 
 // SendOrder 로봇에 오더 전송

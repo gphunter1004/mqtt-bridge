@@ -1,4 +1,4 @@
-// internal/mqtt/order_executor.go (최종 수정본)
+// internal/mqtt/order_executor.go (타임아웃 제거된 최종 수정본)
 package mqtt
 
 import (
@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"mqtt-bridge/internal/config"
 	"mqtt-bridge/internal/models"
-	"mqtt-bridge/internal/repository" // (수정) repository 패키지 import
+	"mqtt-bridge/internal/repository"
 	"mqtt-bridge/internal/utils"
 	"time"
 
@@ -72,7 +72,7 @@ func (e *OrderExecutor) executeNextOrder(commandExecution *models.CommandExecuti
 		now := time.Now()
 		repository.UpdateCommandExecutionStatus(e.db, commandExecution, finalStatus, &now)
 		repository.UpdateCommandStatus(e.db, &commandExecution.Command, finalCommandStatus, "")
-		e.sendFinalResponseToPLC(commandExecution.Command.CommandDefinition.CommandType, finalCommandStatus, "")
+		e.sendResponseToPLC(commandExecution.Command.CommandDefinition.CommandType, finalCommandStatus, "")
 
 		utils.Logger.Infof("Workflow completed for command execution ID: %d with status: %s", commandExecution.ID, finalStatus)
 		return nil
@@ -96,7 +96,7 @@ func (e *OrderExecutor) executeNextOrder(commandExecution *models.CommandExecuti
 		now := time.Now()
 		repository.UpdateCommandExecutionStatus(e.db, commandExecution, models.CommandExecutionStatusFailed, &now)
 		repository.UpdateCommandStatus(e.db, &commandExecution.Command, models.StatusFailure, errMsg)
-		e.sendFinalResponseToPLC(commandExecution.Command.CommandDefinition.CommandType, "F", errMsg)
+		e.sendResponseToPLC(commandExecution.Command.CommandDefinition.CommandType, "F", errMsg)
 		return fmt.Errorf(errMsg)
 	}
 
@@ -118,6 +118,7 @@ func (e *OrderExecutor) executeNextOrder(commandExecution *models.CommandExecuti
 	return nil
 }
 
+// executeNextStep 다음 단계 실행 (타임아웃 제거)
 func (e *OrderExecutor) executeNextStep(execution *models.OrderExecution, template *models.OrderTemplate) {
 	var currentOrderStep *models.OrderStep
 	for i := range template.OrderSteps {
@@ -153,9 +154,9 @@ func (e *OrderExecutor) executeNextStep(execution *models.OrderExecution, templa
 	stepExecution.SentToRobot = true
 	e.db.Save(stepExecution)
 
-	if currentOrderStep.WaitForCompletion {
-		go e.waitForActionCompletion(stepExecution, execution, template, currentOrderStep.TimeoutSeconds)
-	} else {
+	// WaitForCompletion이 false인 경우에만 즉시 다음 단계로 진행
+	// true인 경우 state 메시지를 통해 완료 대기 (타임아웃 제거)
+	if !currentOrderStep.WaitForCompletion {
 		now := time.Now()
 		repository.UpdateStepExecutionStatus(e.db, stepExecution, models.StepExecutionStatusFinished, models.PreviousResultSuccess, "", &now)
 		execution.CurrentStep++
@@ -209,7 +210,8 @@ func (e *OrderExecutor) triggerNextOrder(completedOrder *models.OrderExecution, 
 	e.executeNextOrder(&cmdExec)
 }
 
-func (e *OrderExecutor) sendFinalResponseToPLC(command, status, errMsg string) {
+// sendResponseToPLC PLC에 응답 전송 (함수명 통일)
+func (e *OrderExecutor) sendResponseToPLC(command, status, errMsg string) {
 	var finalStatus string
 	if status == models.StatusSuccess {
 		finalStatus = "S"
@@ -225,30 +227,12 @@ func (e *OrderExecutor) sendFinalResponseToPLC(command, status, errMsg string) {
 	}
 
 	topic := e.config.PlcResponseTopic
-	utils.Logger.Infof("Sending FINAL response to PLC: %s", response)
+	utils.Logger.Infof("Sending response to PLC: %s", response)
 	token := e.mqttClient.Publish(topic, 0, false, response)
 	if token.Wait() && token.Error() != nil {
-		utils.Logger.Errorf("Failed to send FINAL response to PLC: %v", token.Error())
+		utils.Logger.Errorf("Failed to send response to PLC: %v", token.Error())
 	} else {
-		utils.Logger.Infof("FINAL response sent successfully to PLC: %s", response)
-	}
-}
-
-func (e *OrderExecutor) waitForActionCompletion(step *models.StepExecution, order *models.OrderExecution, template *models.OrderTemplate, timeoutSeconds int) {
-	timeout := time.Duration(timeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = 300 * time.Second
-	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-
-	<-timer.C
-
-	var currentStep models.StepExecution
-	e.db.First(&currentStep, step.ID)
-	if currentStep.Status == models.StepExecutionStatusRunning {
-		utils.Logger.Warnf("Action timeout for step execution ID %d", step.ID)
-		e.handleStepFailure(step, order, "Action timed out")
+		utils.Logger.Infof("Response sent successfully to PLC: %s", response)
 	}
 }
 
