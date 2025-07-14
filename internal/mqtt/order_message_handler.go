@@ -11,6 +11,7 @@ import (
 	"mqtt-bridge/internal/utils"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -188,17 +189,49 @@ func (h *OrderMessageHandler) BuildOrderMessage(execution *models.OrderExecution
 	}
 }
 
-// SendDirectActionOrder :I 또는 :T 명령을 처리하는 함수 (orderID 반환)
-func (h *OrderMessageHandler) SendDirectActionOrder(baseCommand string, commandType rune) (string, error) {
+// SendDirectActionOrder :I 또는 :T 명령을 처리하는 함수 (orderID 반환, arm 파라미터 추가)
+func (h *OrderMessageHandler) SendDirectActionOrder(baseCommand string, commandType rune, armParam string) (string, error) {
 	var actionType, paramKey string
+	var actionParameters []DirectOrderActionParameter
 
 	switch commandType {
 	case 'I':
 		actionType = "Roboligent Robin - Inference"
 		paramKey = "inference_name"
+		actionParameters = []DirectOrderActionParameter{
+			{
+				Key:   paramKey,
+				Value: baseCommand,
+			},
+		}
 	case 'T':
 		actionType = "Roboligent Robin - Follow Trajectory"
-		paramKey = "trajectory_name"
+		// :T 명령의 경우 trajectory_name과 arm 파라미터 둘 다 필요
+		actionParameters = []DirectOrderActionParameter{
+			{
+				Key:   "trajectory_name",
+				Value: baseCommand,
+			},
+		}
+
+		// arm 파라미터 처리
+		arm := "right" // 기본값
+		if armParam != "" {
+			switch strings.ToUpper(armParam) {
+			case "R":
+				arm = "right"
+			case "L":
+				arm = "left"
+			default:
+				return "", fmt.Errorf("invalid arm parameter: %s (use R or L)", armParam)
+			}
+		}
+
+		actionParameters = append(actionParameters, DirectOrderActionParameter{
+			Key:   "arm",
+			Value: arm,
+		})
+
 	default:
 		return "", fmt.Errorf("invalid direct action command type: %c", commandType)
 	}
@@ -234,12 +267,7 @@ func (h *OrderMessageHandler) SendDirectActionOrder(baseCommand string, commandT
 						ActionID:          h.GenerateActionID(),
 						ActionDescription: fmt.Sprintf("Execute %s for %s", actionType, baseCommand),
 						BlockingType:      "NONE",
-						ActionParameters: []DirectOrderActionParameter{
-							{
-								Key:   paramKey,
-								Value: baseCommand,
-							},
-						},
+						ActionParameters:  actionParameters,
 					},
 				},
 			},

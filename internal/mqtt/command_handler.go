@@ -1,4 +1,4 @@
-// internal/mqtt/command_handler.go (이벤트 기반 응답으로 수정)
+// internal/mqtt/command_handler.go (동시 처리 방지 로직 제거)
 package mqtt
 
 import (
@@ -9,7 +9,6 @@ import (
 	"mqtt-bridge/internal/repository"
 	"mqtt-bridge/internal/utils"
 	"strings"
-	"sync"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -24,8 +23,6 @@ type CommandHandler struct {
 	config              *config.Config
 	orderExecutor       *OrderExecutor
 	orderMessageHandler *OrderMessageHandler
-	processingMutex     sync.Mutex
-	isProcessing        bool
 }
 
 func NewCommandHandler(db *gorm.DB, redisClient *redis.Client, mqttClient mqtt.Client, cfg *config.Config) *CommandHandler {
@@ -55,28 +52,22 @@ func (h *CommandHandler) HandleCommand(client mqtt.Client, msg mqtt.Message) {
 	utils.Logger.Infof("Received command from PLC: %s", commandStr)
 
 	// :I 또는 :T 접미사 확인 (Direct Action 명령)
-	if strings.HasSuffix(commandStr, ":I") || strings.HasSuffix(commandStr, ":T") {
+	if strings.HasSuffix(commandStr, ":I") || strings.Contains(commandStr, ":T") {
 		parts := strings.Split(commandStr, ":")
-		if len(parts) == 2 {
+		if len(parts) >= 2 {
 			baseCommand := parts[0]
 			commandType := rune(parts[1][0])
 
-			utils.Logger.Infof("Processing direct action command: %s, Type: %c", baseCommand, commandType)
-
-			// 동시 처리 방지
-			h.processingMutex.Lock()
-			if h.isProcessing {
-				h.processingMutex.Unlock()
-				errMsg := "Command rejected: Another command is currently processing"
-				utils.Logger.Warnf("Command %s rejected: %s", commandStr, errMsg)
-				h.sendResponseToPLC(commandStr, "R", errMsg)
-				return
+			var armParam string = ""
+			if commandType == 'T' && len(parts) >= 3 {
+				// :T:R 또는 :T:L 형태
+				armParam = parts[2]
 			}
-			h.isProcessing = true
-			h.processingMutex.Unlock()
+
+			utils.Logger.Infof("Processing direct action command: %s, Type: %c, Arm: %s", baseCommand, commandType, armParam)
 
 			// 직접 액션 명령 처리
-			go h.processDirectActionCommand(commandStr, baseCommand, commandType)
+			go h.processDirectActionCommand(commandStr, baseCommand, commandType, armParam)
 			return
 		}
 	}
@@ -100,26 +91,6 @@ func (h *CommandHandler) HandleCommand(client mqtt.Client, msg mqtt.Message) {
 		return
 	}
 
-	h.processingMutex.Lock()
-	if h.isProcessing {
-		h.processingMutex.Unlock()
-		errMsg := "Command rejected: Another command is currently processing"
-		utils.Logger.Warnf("Command %s rejected: %s", commandStr, errMsg)
-		h.sendResponseToPLC(commandStr, "R", errMsg)
-		now := time.Now()
-		command := &models.Command{
-			CommandDefinitionID: cmdDef.ID,
-			Status:              models.StatusRejected,
-			RequestTime:         now,
-			ResponseTime:        &now,
-			ErrorMessage:        errMsg,
-		}
-		h.db.Create(command)
-		return
-	}
-	h.isProcessing = true
-	h.processingMutex.Unlock()
-
 	command := &models.Command{
 		CommandDefinitionID: cmdDef.ID,
 		Status:              models.StatusPending,
@@ -132,13 +103,7 @@ func (h *CommandHandler) HandleCommand(client mqtt.Client, msg mqtt.Message) {
 }
 
 // processDirectActionCommand 직접 액션 명령 처리 (이벤트 기반)
-func (h *CommandHandler) processDirectActionCommand(fullCommand, baseCommand string, commandType rune) {
-	defer func() {
-		h.processingMutex.Lock()
-		h.isProcessing = false
-		h.processingMutex.Unlock()
-	}()
-
+func (h *CommandHandler) processDirectActionCommand(fullCommand, baseCommand string, commandType rune, armParam string) {
 	// 로봇 온라인 상태 확인
 	var robotStatus models.RobotStatus
 	h.db.Where("serial_number = ?", h.config.RobotSerialNumber).First(&robotStatus)
@@ -150,7 +115,7 @@ func (h *CommandHandler) processDirectActionCommand(fullCommand, baseCommand str
 	}
 
 	// 오더 전송
-	orderID, err := h.orderMessageHandler.SendDirectActionOrder(baseCommand, commandType)
+	orderID, err := h.orderMessageHandler.SendDirectActionOrder(baseCommand, commandType, armParam)
 	if err != nil {
 		errMsg := fmt.Sprintf("Failed to send direct action order: %v", err)
 		utils.Logger.Errorf(errMsg)
@@ -166,12 +131,6 @@ func (h *CommandHandler) processDirectActionCommand(fullCommand, baseCommand str
 
 // processCommand 실제 명령 처리 로직 (비동기 실행)
 func (h *CommandHandler) processCommand(command *models.Command) {
-	defer func() {
-		h.processingMutex.Lock()
-		h.isProcessing = false
-		h.processingMutex.Unlock()
-	}()
-
 	var robotStatus models.RobotStatus
 	// Preload CommandDefinition
 	h.db.Preload("CommandDefinition").First(&command, command.ID)
@@ -289,15 +248,8 @@ func (h *CommandHandler) sendResponseToPLC(command, status, errMsg string) {
 	}
 }
 
-// FailAllProcessingCommands 외부 요인(로봇 연결 끊김 등)으로 모든 진행중인 명령을 실패처리
+// FailAllProcessingCommands 로봇 연결 끊김 등으로 모든 대기중인 명령을 실패처리
 func (h *CommandHandler) FailAllProcessingCommands(reason string) {
-	h.processingMutex.Lock()
-	defer h.processingMutex.Unlock()
-
-	if !h.isProcessing {
-		return
-	}
-
 	// Redis에서 대기 중인 직접 명령들 실패 처리
 	ctx := context.Background()
 	pattern := "pending_direct_command:*"
@@ -316,13 +268,13 @@ func (h *CommandHandler) FailAllProcessingCommands(reason string) {
 	}
 
 	// 현재 실행 중인 CommandExecution을 찾아서 실패 처리
-	var execution models.CommandExecution
-	if err := h.db.Where("status = ?", models.CommandExecutionStatusRunning).Preload("Command.CommandDefinition").First(&execution).Error; err == nil {
+	var executions []models.CommandExecution
+	h.db.Where("status = ?", models.CommandExecutionStatusRunning).Preload("Command.CommandDefinition").Find(&executions)
+
+	for _, execution := range executions {
 		now := time.Now()
 		repository.UpdateCommandExecutionStatus(h.db, &execution, models.CommandExecutionStatusFailed, &now)
 		repository.UpdateCommandStatus(h.db, &execution.Command, models.StatusFailure, reason)
 		h.sendResponseToPLC(execution.Command.CommandDefinition.CommandType, "F", reason)
 	}
-
-	h.isProcessing = false
 }
