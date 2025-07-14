@@ -45,26 +45,6 @@ func (p *Publisher) PublishInstantAction(action interface{}) error {
 	return p.publishJSON(topic, action, "instant action")
 }
 
-// PublishResponse PLC 응답 메시지 발행
-func (p *Publisher) PublishResponse(command, status, errMsg string) error {
-	response := fmt.Sprintf("%s:%s", command, status)
-
-	if status == constants.StatusFailure && errMsg != "" {
-		utils.Logger.Errorf("Command %s failed: %s", command, errMsg)
-	}
-
-	utils.Logger.Infof("Sending response to PLC: %s", response)
-
-	token := p.client.Publish(constants.TopicBridgeResponse, 0, false, response)
-	if token.Wait() && token.Error() != nil {
-		utils.Logger.Errorf("Failed to send response to PLC: %v", token.Error())
-		return token.Error()
-	}
-
-	utils.Logger.Infof("Response sent successfully to PLC: %s", response)
-	return nil
-}
-
 // PublishInitPosition 위치 초기화 요청 발행
 func (p *Publisher) PublishInitPosition(manufacturer, serialNumber string, pose map[string]interface{}) error {
 	actionID := idgen.UniqueID()

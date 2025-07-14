@@ -1,10 +1,11 @@
-// internal/command/handler.go (수정된 버전 - 공통 상수 사용)
+// internal/command/handler.go
 package command
 
 import (
 	"fmt"
 	"mqtt-bridge/internal/common/constants"
 	"mqtt-bridge/internal/config"
+	"mqtt-bridge/internal/messaging"
 	"mqtt-bridge/internal/models"
 	"mqtt-bridge/internal/utils"
 	"strings"
@@ -14,28 +15,25 @@ import (
 	"gorm.io/gorm"
 )
 
-// MessagingClient MQTT 메시징 클라이언트 인터페이스
-type MessagingClient interface {
-	Publish(topic string, qos byte, retained bool, payload interface{}) error
-}
-
 // Handler PLC 명령 처리 핸들러
 type Handler struct {
-	db              *gorm.DB
-	config          *config.Config
-	processor       *Processor
-	messagingClient MessagingClient
+	db        *gorm.DB
+	config    *config.Config
+	processor *Processor
+	plcSender *messaging.PLCResponseSender
 }
 
 // NewHandler 새 명령 핸들러 생성
-func NewHandler(db *gorm.DB, cfg *config.Config, processor *Processor, messagingClient MessagingClient) *Handler {
+func NewHandler(db *gorm.DB, cfg *config.Config, processor *Processor,
+	plcSender *messaging.PLCResponseSender) *Handler {
+
 	utils.Logger.Infof("🏗️ CREATING Command Handler")
 
 	handler := &Handler{
-		db:              db,
-		config:          cfg,
-		processor:       processor,
-		messagingClient: messagingClient,
+		db:        db,
+		config:    cfg,
+		processor: processor,
+		plcSender: plcSender,
 	}
 
 	utils.Logger.Infof("✅ Command Handler CREATED")
@@ -72,19 +70,8 @@ func (h *Handler) HandleRobotStateUpdate(stateMsg *models.RobotStateMessage) {
 
 // SendResponseToPLC PLC에 응답 전송
 func (h *Handler) SendResponseToPLC(result CommandResult) {
-	response := fmt.Sprintf("%s:%s", result.Command, result.Status)
-
-	if result.Status == constants.StatusFailure && result.Message != "" {
-		utils.Logger.Errorf("Command %s failed: %s", result.Command, result.Message)
-	}
-
-	topic := h.config.PlcResponseTopic
-	utils.Logger.Infof("Sending response to PLC: %s", response)
-
-	if err := h.messagingClient.Publish(topic, 0, false, response); err != nil {
-		utils.Logger.Errorf("Failed to send response to PLC: %v", err)
-	} else {
-		utils.Logger.Infof("Response sent successfully to PLC: %s", response)
+	if err := h.plcSender.SendResponse(result.Command, result.Status, result.Message); err != nil {
+		utils.Logger.Errorf("Failed to send PLC response: %v", err)
 	}
 }
 
@@ -102,13 +89,10 @@ func (h *Handler) FailAllProcessingCommands(reason string) {
 		Preload("Command.CommandDefinition").Find(&executions)
 
 	for _, execution := range executions {
-		result := CommandResult{
-			Command:   execution.Command.CommandDefinition.CommandType,
-			Status:    constants.StatusFailure,
-			Message:   reason,
-			Timestamp: time.Now(),
+		if err := h.plcSender.SendFailure(execution.Command.CommandDefinition.CommandType, reason); err != nil {
+			utils.Logger.Errorf("Failed to send failure response for command %s: %v",
+				execution.Command.CommandDefinition.CommandType, err)
 		}
-		h.SendResponseToPLC(result)
 	}
 }
 
@@ -121,12 +105,13 @@ func (h *Handler) isDirectActionCommand(commandStr string) bool {
 func (h *Handler) handleDirectActionCommand(commandStr string) {
 	parts := strings.Split(commandStr, ":")
 	if len(parts) < 2 {
-		h.SendResponseToPLC(CommandResult{
+		result := CommandResult{
 			Command:   commandStr,
 			Status:    constants.StatusFailure,
 			Message:   "Invalid command format",
 			Timestamp: time.Now(),
-		})
+		}
+		h.SendResponseToPLC(result)
 		return
 	}
 
@@ -166,12 +151,13 @@ func (h *Handler) handleStandardCommand(commandStr string) {
 	// 명령 정의 조회
 	var cmdDef models.CommandDefinition
 	if err := h.db.Where("command_type = ? AND is_active = true", commandStr).First(&cmdDef).Error; err != nil {
-		h.SendResponseToPLC(CommandResult{
+		result := CommandResult{
 			Command:   commandStr,
 			Status:    constants.StatusFailure,
 			Message:   fmt.Sprintf("Command '%s' not defined or inactive", commandStr),
 			Timestamp: time.Now(),
-		})
+		}
+		h.SendResponseToPLC(result)
 		return
 	}
 

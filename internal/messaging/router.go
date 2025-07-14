@@ -21,12 +21,7 @@ type RobotHandler interface {
 	HandleConnectionState(client mqtt.Client, msg mqtt.Message)
 	HandleRobotState(client mqtt.Client, msg mqtt.Message)
 	HandleFactsheet(client mqtt.Client, msg mqtt.Message)
-}
-
-// PositionHandler 위치 처리 인터페이스
-type PositionHandler interface {
 	CheckAndRequestInitPosition(stateMsg *models.RobotStateMessage)
-	HandleFactsheet(client mqtt.Client, msg mqtt.Message)
 }
 
 // WorkflowHandler 워크플로우 처리 인터페이스
@@ -38,20 +33,16 @@ type WorkflowHandler interface {
 type Router struct {
 	commandHandler  CommandHandler
 	robotHandler    RobotHandler
-	positionHandler PositionHandler
 	workflowHandler WorkflowHandler
 }
 
 // NewRouter 새 메시지 라우터 생성
-func NewRouter(commandHandler CommandHandler, robotHandler RobotHandler,
-	positionHandler PositionHandler, workflowHandler WorkflowHandler) *Router {
-
+func NewRouter(commandHandler CommandHandler, robotHandler RobotHandler, workflowHandler WorkflowHandler) *Router {
 	utils.Logger.Infof("🏗️ CREATING Message Router")
 
 	router := &Router{
 		commandHandler:  commandHandler,
 		robotHandler:    robotHandler,
-		positionHandler: positionHandler,
 		workflowHandler: workflowHandler,
 	}
 
@@ -79,9 +70,13 @@ func (r *Router) RouteMessage(client mqtt.Client, msg mqtt.Message) {
 		r.handleRobotState(client, msg)
 
 	case strings.Contains(topic, "/factsheet"):
-		// 팩트시트 (로봇과 위치 핸들러 모두 처리)
+		// 팩트시트 (robot handler에서만 처리)
 		r.robotHandler.HandleFactsheet(client, msg)
-		r.positionHandler.HandleFactsheet(client, msg)
+
+	case strings.Contains(topic, "/order"):
+		// Order 메시지 (전체 내용 로깅)
+		utils.Logger.Infof("📦 ORDER received from %s (%d bytes)", topic, len(msg.Payload()))
+		utils.Logger.Infof("📦 ORDER CONTENT: %s", string(msg.Payload()))
 
 	default:
 		utils.Logger.Warnf("Unhandled topic: %s", topic)
@@ -109,27 +104,7 @@ func (r *Router) handleRobotState(client mqtt.Client, msg mqtt.Message) {
 		r.workflowHandler.HandleOrderStateUpdate(&stateMsg)
 	}
 
-	if r.positionHandler != nil {
-		r.positionHandler.CheckAndRequestInitPosition(&stateMsg)
+	if r.robotHandler != nil {
+		r.robotHandler.CheckAndRequestInitPosition(&stateMsg)
 	}
-}
-
-// GetCommandHandler 명령 핸들러 반환
-func (r *Router) GetCommandHandler() CommandHandler {
-	return r.commandHandler
-}
-
-// GetRobotHandler 로봇 핸들러 반환
-func (r *Router) GetRobotHandler() RobotHandler {
-	return r.robotHandler
-}
-
-// GetPositionHandler 위치 핸들러 반환
-func (r *Router) GetPositionHandler() PositionHandler {
-	return r.positionHandler
-}
-
-// GetWorkflowHandler 워크플로우 핸들러 반환
-func (r *Router) GetWorkflowHandler() WorkflowHandler {
-	return r.workflowHandler
 }

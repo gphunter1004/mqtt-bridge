@@ -1,4 +1,4 @@
-// internal/workflow/executor.go (공통 기능 적용)
+// internal/workflow/executor.go (통합된 버전)
 package workflow
 
 import (
@@ -7,6 +7,7 @@ import (
 	"mqtt-bridge/internal/common/constants"
 	"mqtt-bridge/internal/common/idgen"
 	"mqtt-bridge/internal/config"
+	"mqtt-bridge/internal/messaging"
 	"mqtt-bridge/internal/models"
 	"mqtt-bridge/internal/repository"
 	"mqtt-bridge/internal/utils"
@@ -17,25 +18,20 @@ import (
 	"gorm.io/gorm"
 )
 
-// CommandResultSender 명령 결과 전송 인터페이스
-type CommandResultSender interface {
-	SendResponseToPLC(command, status, errMsg string)
-}
-
 // Executor 워크플로우 실행 엔진
 type Executor struct {
-	db                  *gorm.DB
-	redisClient         *redis.Client
-	mqttClient          mqtt.Client
-	config              *config.Config
-	orderBuilder        *OrderBuilder
-	stepManager         *StepManager
-	commandResultSender CommandResultSender
+	db           *gorm.DB
+	redisClient  *redis.Client
+	mqttClient   mqtt.Client
+	config       *config.Config
+	orderBuilder *OrderBuilder
+	stepManager  *StepManager
+	plcSender    *messaging.PLCResponseSender // 통합된 PLC 응답 전송기
 }
 
 // NewExecutor 새 워크플로우 실행기 생성
 func NewExecutor(db *gorm.DB, redisClient *redis.Client, mqttClient mqtt.Client, cfg *config.Config,
-	commandResultSender CommandResultSender) *Executor {
+	plcSender *messaging.PLCResponseSender) *Executor {
 
 	utils.Logger.Infof("🏗️ CREATING Workflow Executor")
 
@@ -47,20 +43,20 @@ func NewExecutor(db *gorm.DB, redisClient *redis.Client, mqttClient mqtt.Client,
 	stepManager := NewStepManager(db, redisClient, orderBuilder, messageSender)
 
 	executor := &Executor{
-		db:                  db,
-		redisClient:         redisClient,
-		mqttClient:          mqttClient,
-		config:              cfg,
-		orderBuilder:        orderBuilder,
-		stepManager:         stepManager,
-		commandResultSender: commandResultSender,
+		db:           db,
+		redisClient:  redisClient,
+		mqttClient:   mqttClient,
+		config:       cfg,
+		orderBuilder: orderBuilder,
+		stepManager:  stepManager,
+		plcSender:    plcSender, // 통합된 PLC 전송기 주입
 	}
 
 	utils.Logger.Infof("✅ Workflow Executor CREATED")
 	return executor
 }
 
-// ExecuteCommandOrder PLC 명령에 대한 워크플로우 실행 시작 (공통 상수 사용)
+// ExecuteCommandOrder PLC 명령에 대한 워크플로우 실행 시작
 func (e *Executor) ExecuteCommandOrder(command *models.Command) error {
 	if command.CommandDefinition.CommandType == "" {
 		e.db.Preload("CommandDefinition").First(&command, command.ID)
@@ -103,7 +99,7 @@ func (e *Executor) HandleOrderStateUpdate(stateMsg *models.RobotStateMessage) {
 	}
 }
 
-// CancelAllRunningOrders 모든 실행 중인 오더 취소 (공통 상수 사용)
+// CancelAllRunningOrders 모든 실행 중인 오더 취소
 func (e *Executor) CancelAllRunningOrders() error {
 	var commandExecutions []models.CommandExecution
 	e.db.Where("status = ?", constants.CommandExecutionStatusRunning).Find(&commandExecutions)
@@ -156,7 +152,7 @@ func (e *Executor) SendCancelOrder() error {
 	return nil
 }
 
-// executeNextOrder 조건에 맞는 다음 오더를 찾아 실행 (공통 상수 사용)
+// executeNextOrder 조건에 맞는 다음 오더를 찾아 실행
 func (e *Executor) executeNextOrder(commandExecution *models.CommandExecution) error {
 	e.db.Preload("Command.CommandDefinition").First(&commandExecution, commandExecution.ID)
 
@@ -184,15 +180,15 @@ func (e *Executor) executeNextOrder(commandExecution *models.CommandExecution) e
 		now := time.Now()
 		repository.UpdateCommandExecutionStatus(e.db, commandExecution, constants.CommandExecutionStatusFailed, &now)
 		repository.UpdateCommandStatus(e.db, &commandExecution.Command, constants.CommandStatusFailure, errMsg)
-		e.sendResponseToPLC(commandExecution.Command.CommandDefinition.CommandType, "F", errMsg)
+		e.sendResponseToPLC(commandExecution.Command.CommandDefinition.CommandType, constants.CommandStatusFailure, errMsg)
 		return fmt.Errorf(errMsg)
 	}
 
-	// 새 오더 실행 생성 (공통 ID 생성기 사용)
+	// 새 오더 실행 생성
 	orderExecution := &models.OrderExecution{
 		CommandExecutionID: commandExecution.ID,
 		TemplateID:         mapping.TemplateID,
-		OrderID:            idgen.OrderID(),
+		OrderID:            idgen.OrderID(), // 직접 ID 생성기 호출
 		ExecutionOrder:     mapping.ExecutionOrder,
 		CurrentStep:        1,
 		Status:             constants.OrderExecutionStatusRunning,
@@ -209,7 +205,7 @@ func (e *Executor) executeNextOrder(commandExecution *models.CommandExecution) e
 	return nil
 }
 
-// completeCommandExecution 명령 실행 완료 처리 (공통 상수 사용)
+// completeCommandExecution 명령 실행 완료 처리
 func (e *Executor) completeCommandExecution(commandExecution *models.CommandExecution) error {
 	var failedOrderCount int64
 	e.db.Model(&models.OrderExecution{}).Where("command_execution_id = ? AND status = ?",
@@ -252,36 +248,25 @@ func (e *Executor) TriggerNextOrder(completedOrder *models.OrderExecution, succe
 	e.executeNextOrder(&cmdExec)
 }
 
-// sendResponseToPLC PLC에 응답 전송 (공통 상수 사용)
+// sendResponseToPLC PLC에 응답 전송 (통합된 로직 사용)
 func (e *Executor) sendResponseToPLC(command, status, errMsg string) {
-	if e.commandResultSender != nil {
-		e.commandResultSender.SendResponseToPLC(command, status, errMsg)
-	} else {
-		// 직접 전송 (fallback)
-		var finalStatus string
-		if status == constants.CommandStatusSuccess {
-			finalStatus = constants.StatusSuccess
-		} else if status == constants.CommandStatusFailure {
-			finalStatus = constants.StatusFailure
-		} else {
-			finalStatus = status
-		}
+	var finalStatus string
+	switch status {
+	case constants.CommandStatusSuccess:
+		finalStatus = constants.StatusSuccess
+	case constants.CommandStatusFailure:
+		finalStatus = constants.StatusFailure
+	default:
+		finalStatus = status
+	}
 
-		response := fmt.Sprintf("%s:%s", command, finalStatus)
-		if finalStatus == constants.StatusFailure && errMsg != "" {
-			utils.Logger.Errorf("Command %s failed: %s", command, errMsg)
-		}
-
-		topic := constants.TopicBridgeResponse
-		utils.Logger.Infof("Sending response to PLC: %s", response)
-		token := e.mqttClient.Publish(topic, 0, false, response)
-		if token.Wait() && token.Error() != nil {
-			utils.Logger.Errorf("Failed to send response to PLC: %v", token.Error())
-		}
+	// 통합된 PLC 전송기 사용
+	if err := e.plcSender.SendResponse(command, finalStatus, errMsg); err != nil {
+		utils.Logger.Errorf("Failed to send PLC response via workflow: %v", err)
 	}
 }
 
-// sendOrder 오더 메시지 전송 (공통 토픽 함수 사용)
+// sendOrder 오더 메시지 전송
 func (e *Executor) sendOrder(orderPayload interface{}) error {
 	topic := constants.GetMeiliOrderTopic(e.config.RobotManufacturer, e.config.RobotSerialNumber)
 
@@ -302,32 +287,13 @@ func (e *Executor) sendOrder(orderPayload interface{}) error {
 	return nil
 }
 
-// GetRunningExecutions 실행 중인 명령 실행들 조회 (공통 상수 사용)
-func (e *Executor) GetRunningExecutions() ([]models.CommandExecution, error) {
-	var executions []models.CommandExecution
-	err := e.db.Where("status = ?", constants.CommandExecutionStatusRunning).
-		Preload("Command.CommandDefinition").Find(&executions).Error
-	return executions, err
-}
-
-// GetExecutionByID 특정 실행 조회
-func (e *Executor) GetExecutionByID(id uint) (*models.CommandExecution, error) {
-	var execution models.CommandExecution
-	err := e.db.Preload("Command.CommandDefinition").
-		Preload("OrderExecutions.Steps").First(&execution, id).Error
-	if err != nil {
-		return nil, err
-	}
-	return &execution, nil
-}
-
 // MQTTMessageSender MQTT 메시지 전송기 (MessageSender 인터페이스 구현)
 type MQTTMessageSender struct {
 	mqttClient mqtt.Client
 	config     *config.Config
 }
 
-// SendOrderMessage 오더 메시지 전송 (공통 토픽 함수 사용)
+// SendOrderMessage 오더 메시지 전송
 func (m *MQTTMessageSender) SendOrderMessage(orderMsg *models.OrderMessage) error {
 	topic := constants.GetMeiliOrderTopic(m.config.RobotManufacturer, m.config.RobotSerialNumber)
 

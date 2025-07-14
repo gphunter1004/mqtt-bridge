@@ -1,4 +1,4 @@
-// cmd/main.go (새로운 구조 적용)
+// cmd/main.go (수정된 버전 - Position Domain 제거)
 package main
 
 import (
@@ -22,7 +22,7 @@ func main() {
 
 	// 로거 설정
 	utils.SetupLogger(cfg.LogLevel)
-	utils.Logger.Infof("🚀 Starting MQTT Bridge with new architecture")
+	utils.Logger.Infof("🚀 Starting MQTT Bridge with streamlined architecture")
 
 	// 데이터베이스 연결
 	db, err := database.NewPostgresDB(cfg)
@@ -38,7 +38,7 @@ func main() {
 	}
 	utils.Logger.Infof("✅ Redis connected")
 
-	// 브릿지 서비스 생성 (모든 도메인과 인프라 조합)
+	// 브릿지 서비스 생성
 	bridgeService, err := bridge.NewService(db, redisClient, cfg)
 	if err != nil {
 		utils.Logger.Fatalf("Failed to create bridge service: %v", err)
@@ -55,13 +55,7 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	utils.Logger.Info("🎉 MQTT Bridge started successfully with new architecture")
-	utils.Logger.Info("📋 Available domains:")
-	utils.Logger.Info("  - Command Domain: PLC 명령 처리")
-	utils.Logger.Info("  - Robot Domain: 로봇 상태 관리")
-	utils.Logger.Info("  - Workflow Domain: 워크플로우 실행")
-	utils.Logger.Info("  - Position Domain: 위치 관리")
-	utils.Logger.Info("  - Messaging Infrastructure: MQTT 통신")
+	utils.Logger.Info("🎉 MQTT Bridge started successfully with streamlined architecture")
 
 	<-sigChan
 	utils.Logger.Info("🛑 Shutting down...")

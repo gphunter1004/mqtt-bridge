@@ -203,8 +203,3 @@ func (c *Command) GetResponseCode() string {
 		return cmdType + ":F"
 	}
 }
-
-// IsValidConnectionState 유효한 연결 상태인지 확인
-func IsValidConnectionState(state string) bool {
-	return constants.IsValidConnectionState(state)
-}

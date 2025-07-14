@@ -52,6 +52,10 @@ func (s *Subscriber) SubscribeAll() error {
 			topic:       "meili/v2/+/+/factsheet",
 			description: "Robot Factsheets",
 		},
+		{
+			topic:       "meili/v2/+/+/order",
+			description: "Robot Order Responses",
+		},
 	}
 
 	// 각 토픽 구독
@@ -93,32 +97,4 @@ func (s *Subscriber) Subscribe(topic string, qos byte, handler MessageHandler) e
 
 	utils.Logger.Infof("✅ SUBSCRIPTION SUCCESS: %s", topic)
 	return nil
-}
-
-// Unsubscribe 구독 해제
-func (s *Subscriber) Unsubscribe(topics ...string) error {
-	for _, topic := range topics {
-		utils.Logger.Infof("🔕 UNSUBSCRIBING FROM: %s", topic)
-		// 실제 구독 해제 로직은 MQTT 클라이언트에 따라 구현
-		// 현재는 로그만 남김
-	}
-	return nil
-}
-
-// IsSubscribed 구독 상태 확인 (구현 필요시)
-func (s *Subscriber) IsSubscribed(topic string) bool {
-	// MQTT 클라이언트에 따라 구독 상태를 확인하는 로직
-	// 현재는 기본 구현만 제공
-	return true
-}
-
-// GetSubscriptionStatus 구독 상태 조회
-func (s *Subscriber) GetSubscriptionStatus() map[string]bool {
-	// 현재 구독 중인 토픽들의 상태를 반환
-	return map[string]bool{
-		"bridge/command":          true,
-		"meili/v2/+/+/connection": true,
-		"meili/v2/+/+/state":      true,
-		"meili/v2/+/+/factsheet":  true,
-	}
 }

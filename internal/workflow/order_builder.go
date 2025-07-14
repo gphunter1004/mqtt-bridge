@@ -308,20 +308,3 @@ func (b *OrderBuilder) buildActionParameters(params []models.ActionParameter) []
 
 	return actionParams
 }
-
-// 편의 함수들 (공통 ID 생성기 사용)
-func (b *OrderBuilder) GenerateOrderID() string {
-	return idgen.OrderID()
-}
-
-func (b *OrderBuilder) GenerateNodeID() string {
-	return idgen.NodeID()
-}
-
-func (b *OrderBuilder) GenerateActionID() string {
-	return idgen.ActionID()
-}
-
-func (b *OrderBuilder) GenerateEdgeID() string {
-	return idgen.EdgeID()
-}

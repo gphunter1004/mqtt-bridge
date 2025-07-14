@@ -224,19 +224,3 @@ func (s *StepManager) determineStepResultFromMap(statuses map[string]string, ste
 
 	return ""
 }
-
-// GetRunningSteps 실행 중인 단계들 조회 (공통 상수 사용)
-func (s *StepManager) GetRunningSteps() ([]models.StepExecution, error) {
-	var steps []models.StepExecution
-	err := s.db.Where("status = ?", constants.StepExecutionStatusRunning).
-		Preload("Execution").Find(&steps).Error
-	return steps, err
-}
-
-// GetStepsByOrderID 특정 오더의 모든 단계 조회
-func (s *StepManager) GetStepsByOrderID(orderExecutionID uint) ([]models.StepExecution, error) {
-	var steps []models.StepExecution
-	err := s.db.Where("execution_id = ?", orderExecutionID).
-		Order("step_order ASC").Find(&steps).Error
-	return steps, err
-}
