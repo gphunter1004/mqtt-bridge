@@ -1,27 +1,20 @@
-// internal/workflow/order_builder.go
+// internal/workflow/order_builder.go (공통 기능 적용)
 package workflow
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
+	"mqtt-bridge/internal/common/constants"
+	"mqtt-bridge/internal/common/idgen"
+	"mqtt-bridge/internal/common/types"
 	"mqtt-bridge/internal/config"
 	"mqtt-bridge/internal/models"
 	"mqtt-bridge/internal/utils"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 )
 
-// Float64 항상 소수점을 포함하는 float64
-type Float64 float64
-
-func (f Float64) MarshalJSON() ([]byte, error) {
-	return []byte(fmt.Sprintf("%.1f", float64(f))), nil
-}
-
-// DirectOrderMessage Direct Action Order 전용 구조체
+// DirectOrderMessage Direct Action Order 전용 구조체 (공통 타입 사용)
 type DirectOrderMessage struct {
 	HeaderID      int64             `json:"headerId"`
 	Timestamp     string            `json:"timestamp"`
@@ -44,12 +37,12 @@ type DirectOrderNode struct {
 }
 
 type DirectNodePosition struct {
-	X                     Float64 `json:"x"`
-	Y                     Float64 `json:"y"`
-	Theta                 Float64 `json:"theta"`
-	AllowedDeviationXY    Float64 `json:"allowedDeviationXY"`
-	AllowedDeviationTheta Float64 `json:"allowedDeviationTheta"`
-	MapID                 string  `json:"mapId"`
+	X                     types.Float64 `json:"x"`
+	Y                     types.Float64 `json:"y"`
+	Theta                 types.Float64 `json:"theta"`
+	AllowedDeviationXY    types.Float64 `json:"allowedDeviationXY"`
+	AllowedDeviationTheta types.Float64 `json:"allowedDeviationTheta"`
+	MapID                 string        `json:"mapId"`
 }
 
 type DirectOrderAction struct {
@@ -66,28 +59,30 @@ type DirectOrderActionParameter struct {
 }
 
 type DirectOrderEdge struct {
-	EdgeID          string  `json:"edgeId"`
-	SequenceID      int     `json:"sequenceId"`
-	StartNodeID     string  `json:"startNodeId"`
-	EndNodeID       string  `json:"endNodeId"`
-	MaxSpeed        Float64 `json:"maxSpeed,omitempty"`
-	MaxHeight       Float64 `json:"maxHeight,omitempty"`
-	MinHeight       Float64 `json:"minHeight,omitempty"`
-	Orientation     Float64 `json:"orientation,omitempty"`
-	Direction       string  `json:"direction,omitempty"`
-	RotationAllowed bool    `json:"rotationAllowed"`
-	Released        bool    `json:"released"`
+	EdgeID          string        `json:"edgeId"`
+	SequenceID      int           `json:"sequenceId"`
+	StartNodeID     string        `json:"startNodeId"`
+	EndNodeID       string        `json:"endNodeId"`
+	MaxSpeed        types.Float64 `json:"maxSpeed,omitempty"`
+	MaxHeight       types.Float64 `json:"maxHeight,omitempty"`
+	MinHeight       types.Float64 `json:"minHeight,omitempty"`
+	Orientation     types.Float64 `json:"orientation,omitempty"`
+	Direction       string        `json:"direction,omitempty"`
+	RotationAllowed bool          `json:"rotationAllowed"`
+	Released        bool          `json:"released"`
 }
 
 // OrderBuilder 오더 메시지 생성기
 type OrderBuilder struct {
 	config *config.Config
+	idGen  *idgen.Generator
 }
 
 // NewOrderBuilder 새 오더 빌더 생성
 func NewOrderBuilder(cfg *config.Config) *OrderBuilder {
 	return &OrderBuilder{
 		config: cfg,
+		idGen:  idgen.NewGenerator("order"),
 	}
 }
 
@@ -109,22 +104,22 @@ func (b *OrderBuilder) BuildOrderMessage(execution *models.OrderExecution, step 
 	}
 }
 
-// BuildDirectActionOrder 직접 액션 오더 메시지 생성
+// BuildDirectActionOrder 직접 액션 오더 메시지 생성 (공통 상수 사용)
 func (b *OrderBuilder) BuildDirectActionOrder(baseCommand string, commandType rune, armParam string) (*DirectOrderMessage, string, error) {
 	var actionType string
 	var actionParameters []DirectOrderActionParameter
 
 	switch commandType {
-	case 'I':
-		actionType = "Roboligent Robin - Inference"
+	case constants.CommandTypeInference:
+		actionType = constants.ActionTypeInference
 		actionParameters = []DirectOrderActionParameter{
 			{
 				Key:   "inference_name",
 				Value: baseCommand,
 			},
 		}
-	case 'T':
-		actionType = "Roboligent Robin - Follow Trajectory"
+	case constants.CommandTypeTrajectory:
+		actionType = constants.ActionTypeTrajectory
 		actionParameters = []DirectOrderActionParameter{
 			{
 				Key:   "trajectory_name",
@@ -132,19 +127,8 @@ func (b *OrderBuilder) BuildDirectActionOrder(baseCommand string, commandType ru
 			},
 		}
 
-		// arm 파라미터 처리
-		arm := "right" // 기본값
-		if armParam != "" {
-			switch strings.ToUpper(armParam) {
-			case "R":
-				arm = "right"
-			case "L":
-				arm = "left"
-			default:
-				return nil, "", fmt.Errorf("invalid arm parameter: %s (use R or L)", armParam)
-			}
-		}
-
+		// arm 파라미터 처리 (공통 함수 사용)
+		arm := constants.ParseArmParam(armParam)
 		actionParameters = append(actionParameters, DirectOrderActionParameter{
 			Key:   "arm",
 			Value: arm,
@@ -154,7 +138,7 @@ func (b *OrderBuilder) BuildDirectActionOrder(baseCommand string, commandType ru
 		return nil, "", fmt.Errorf("invalid direct action command type: %c", commandType)
 	}
 
-	orderID := b.GenerateOrderID()
+	orderID := idgen.OrderID() // 공통 ID 생성기 사용
 
 	directOrder := &DirectOrderMessage{
 		HeaderID:      utils.GetNextHeaderID(),
@@ -166,24 +150,24 @@ func (b *OrderBuilder) BuildDirectActionOrder(baseCommand string, commandType ru
 		OrderUpdateID: 0,
 		Nodes: []DirectOrderNode{
 			{
-				NodeID:      b.GenerateNodeID(),
+				NodeID:      idgen.NodeID(), // 공통 ID 생성기 사용
 				Description: fmt.Sprintf("Direct action for command %s", baseCommand),
 				SequenceID:  1,
 				Released:    true,
 				NodePosition: DirectNodePosition{
-					X:                     Float64(0.0),
-					Y:                     Float64(0.0),
-					Theta:                 Float64(0.0),
-					AllowedDeviationXY:    Float64(0.0),
-					AllowedDeviationTheta: Float64(0.0),
+					X:                     types.ZeroFloat64(),
+					Y:                     types.ZeroFloat64(),
+					Theta:                 types.ZeroFloat64(),
+					AllowedDeviationXY:    types.ZeroFloat64(),
+					AllowedDeviationTheta: types.ZeroFloat64(),
 					MapID:                 "",
 				},
 				Actions: []DirectOrderAction{
 					{
 						ActionType:        actionType,
-						ActionID:          b.GenerateActionID(),
+						ActionID:          idgen.ActionID(), // 공통 ID 생성기 사용
 						ActionDescription: fmt.Sprintf("Execute %s for %s", actionType, baseCommand),
-						BlockingType:      "NONE",
+						BlockingType:      constants.BlockingTypeNone,
 						ActionParameters:  actionParameters,
 					},
 				},
@@ -195,9 +179,9 @@ func (b *OrderBuilder) BuildDirectActionOrder(baseCommand string, commandType ru
 	return directOrder, orderID, nil
 }
 
-// BuildCancelOrderMessage 취소 오더 메시지 생성
+// BuildCancelOrderMessage 취소 오더 메시지 생성 (공통 상수 사용)
 func (b *OrderBuilder) BuildCancelOrderMessage() (map[string]interface{}, error) {
-	actionID := b.generateActionID()
+	actionID := idgen.UniqueID() // 공통 ID 생성기 사용
 
 	request := map[string]interface{}{
 		"headerId":     utils.GetNextHeaderID(),
@@ -207,9 +191,9 @@ func (b *OrderBuilder) BuildCancelOrderMessage() (map[string]interface{}, error)
 		"serialNumber": b.config.RobotSerialNumber,
 		"actions": []map[string]interface{}{
 			{
-				"actionType":       "cancelOrder",
+				"actionType":       constants.ActionTypeCancelOrder,
 				"actionId":         actionID,
-				"blockingType":     "HARD",
+				"blockingType":     constants.BlockingTypeHard,
 				"actionParameters": []map[string]interface{}{},
 			},
 		},
@@ -218,9 +202,9 @@ func (b *OrderBuilder) BuildCancelOrderMessage() (map[string]interface{}, error)
 	return request, nil
 }
 
-// buildOrderNode 오더 노드 생성
+// buildOrderNode 오더 노드 생성 (공통 타입 사용)
 func (b *OrderBuilder) buildOrderNode(step *models.OrderStep) models.OrderNode {
-	nodeID := b.GenerateNodeID()
+	nodeID := idgen.NodeID() // 공통 ID 생성기 사용
 
 	nodePos := models.NodePosition{
 		X:                     models.Float64(0.0),
@@ -249,7 +233,7 @@ func (b *OrderBuilder) buildOrderNode(step *models.OrderStep) models.OrderNode {
 		actionTemplate := mapping.ActionTemplate
 		action := models.OrderAction{
 			ActionType:        actionTemplate.ActionType,
-			ActionID:          b.GenerateActionID(),
+			ActionID:          idgen.ActionID(), // 공통 ID 생성기 사용
 			ActionDescription: actionTemplate.ActionDescription,
 			BlockingType:      actionTemplate.BlockingType,
 			ActionParameters:  b.buildActionParameters(actionTemplate.Parameters),
@@ -267,13 +251,13 @@ func (b *OrderBuilder) buildOrderNode(step *models.OrderStep) models.OrderNode {
 	}
 }
 
-// buildOrderEdges 오더 엣지 생성
+// buildOrderEdges 오더 엣지 생성 (공통 타입 사용)
 func (b *OrderBuilder) buildOrderEdges(step *models.OrderStep) []models.OrderEdge {
 	edges := make([]models.OrderEdge, 0, len(step.Edges))
 
 	for i, edgeTemplate := range step.Edges {
 		edge := models.OrderEdge{
-			EdgeID:          b.GenerateEdgeID(),
+			EdgeID:          idgen.EdgeID(), // 공통 ID 생성기 사용
 			SequenceID:      i,
 			StartNodeID:     edgeTemplate.StartNodeID,
 			EndNodeID:       edgeTemplate.EndNodeID,
@@ -325,35 +309,19 @@ func (b *OrderBuilder) buildActionParameters(params []models.ActionParameter) []
 	return actionParams
 }
 
-// ID 생성 함수들
+// 편의 함수들 (공통 ID 생성기 사용)
 func (b *OrderBuilder) GenerateOrderID() string {
-	randomBytes := make([]byte, 16)
-	rand.Read(randomBytes)
-	return hex.EncodeToString(randomBytes)
+	return idgen.OrderID()
 }
 
 func (b *OrderBuilder) GenerateNodeID() string {
-	randomBytes := make([]byte, 16)
-	rand.Read(randomBytes)
-	return hex.EncodeToString(randomBytes)
+	return idgen.NodeID()
 }
 
 func (b *OrderBuilder) GenerateActionID() string {
-	randomBytes := make([]byte, 16)
-	rand.Read(randomBytes)
-	return hex.EncodeToString(randomBytes)
+	return idgen.ActionID()
 }
 
 func (b *OrderBuilder) GenerateEdgeID() string {
-	randomBytes := make([]byte, 16)
-	rand.Read(randomBytes)
-	return hex.EncodeToString(randomBytes)
-}
-
-func (b *OrderBuilder) generateActionID() string {
-	randomBytes := make([]byte, 16)
-	if _, err := rand.Read(randomBytes); err != nil {
-		return fmt.Sprintf("action_%d", time.Now().UnixNano())
-	}
-	return fmt.Sprintf("%s_%d", hex.EncodeToString(randomBytes), time.Now().UnixNano())
+	return idgen.EdgeID()
 }

@@ -1,9 +1,11 @@
-// internal/workflow/executor.go
+// internal/workflow/executor.go (공통 기능 적용)
 package workflow
 
 import (
 	"encoding/json"
 	"fmt"
+	"mqtt-bridge/internal/common/constants"
+	"mqtt-bridge/internal/common/idgen"
 	"mqtt-bridge/internal/config"
 	"mqtt-bridge/internal/models"
 	"mqtt-bridge/internal/repository"
@@ -58,7 +60,7 @@ func NewExecutor(db *gorm.DB, redisClient *redis.Client, mqttClient mqtt.Client,
 	return executor
 }
 
-// ExecuteCommandOrder PLC 명령에 대한 워크플로우 실행 시작
+// ExecuteCommandOrder PLC 명령에 대한 워크플로우 실행 시작 (공통 상수 사용)
 func (e *Executor) ExecuteCommandOrder(command *models.Command) error {
 	if command.CommandDefinition.CommandType == "" {
 		e.db.Preload("CommandDefinition").First(&command, command.ID)
@@ -67,7 +69,7 @@ func (e *Executor) ExecuteCommandOrder(command *models.Command) error {
 
 	commandExecution := &models.CommandExecution{
 		CommandID:         command.ID,
-		Status:            models.CommandExecutionStatusRunning,
+		Status:            constants.CommandExecutionStatusRunning,
 		CurrentOrderIndex: 1,
 		StartedAt:         time.Now(),
 	}
@@ -101,23 +103,23 @@ func (e *Executor) HandleOrderStateUpdate(stateMsg *models.RobotStateMessage) {
 	}
 }
 
-// CancelAllRunningOrders 모든 실행 중인 오더 취소
+// CancelAllRunningOrders 모든 실행 중인 오더 취소 (공통 상수 사용)
 func (e *Executor) CancelAllRunningOrders() error {
 	var commandExecutions []models.CommandExecution
-	e.db.Where("status = ?", models.CommandExecutionStatusRunning).Find(&commandExecutions)
+	e.db.Where("status = ?", constants.CommandExecutionStatusRunning).Find(&commandExecutions)
 
 	for _, cmdExec := range commandExecutions {
 		now := time.Now()
-		repository.UpdateCommandExecutionStatus(e.db, &cmdExec, models.CommandExecutionStatusCancelled, &now)
+		repository.UpdateCommandExecutionStatus(e.db, &cmdExec, constants.CommandExecutionStatusCancelled, &now)
 
 		var orderExecutions []models.OrderExecution
 		e.db.Where("command_execution_id = ? AND status IN ?",
-			cmdExec.ID, []string{models.OrderExecutionStatusRunning, models.OrderExecutionStatusPending}).
+			cmdExec.ID, []string{constants.OrderExecutionStatusRunning, constants.OrderExecutionStatusPending}).
 			Find(&orderExecutions)
 
 		for _, orderExec := range orderExecutions {
 			nowOrderExec := time.Now()
-			repository.UpdateOrderExecutionStatus(e.db, &orderExec, models.OrderExecutionStatusFailed, &nowOrderExec)
+			repository.UpdateOrderExecutionStatus(e.db, &orderExec, constants.OrderExecutionStatusFailed, &nowOrderExec)
 
 			// 실행 중인 단계들 취소
 			e.stepManager.CancelRunningSteps(orderExec.ID, "Cancelled by order cancel command")
@@ -140,7 +142,7 @@ func (e *Executor) SendCancelOrder() error {
 		return fmt.Errorf("failed to marshal cancelOrder request: %v", err)
 	}
 
-	topic := fmt.Sprintf("meili/v2/%s/%s/instantActions", e.config.RobotManufacturer, e.config.RobotSerialNumber)
+	topic := constants.GetMeiliInstantActionsTopic(e.config.RobotManufacturer, e.config.RobotSerialNumber)
 
 	utils.Logger.Infof("📤 SENDING CANCEL ORDER: %s", string(reqData))
 
@@ -154,7 +156,7 @@ func (e *Executor) SendCancelOrder() error {
 	return nil
 }
 
-// executeNextOrder 조건에 맞는 다음 오더를 찾아 실행
+// executeNextOrder 조건에 맞는 다음 오더를 찾아 실행 (공통 상수 사용)
 func (e *Executor) executeNextOrder(commandExecution *models.CommandExecution) error {
 	e.db.Preload("Command.CommandDefinition").First(&commandExecution, commandExecution.ID)
 
@@ -180,20 +182,20 @@ func (e *Executor) executeNextOrder(commandExecution *models.CommandExecution) e
 		utils.Logger.Errorf("Workflow for CommandExecutionID %d will be terminated. Reason: %s", commandExecution.ID, errMsg)
 
 		now := time.Now()
-		repository.UpdateCommandExecutionStatus(e.db, commandExecution, models.CommandExecutionStatusFailed, &now)
-		repository.UpdateCommandStatus(e.db, &commandExecution.Command, models.StatusFailure, errMsg)
+		repository.UpdateCommandExecutionStatus(e.db, commandExecution, constants.CommandExecutionStatusFailed, &now)
+		repository.UpdateCommandStatus(e.db, &commandExecution.Command, constants.CommandStatusFailure, errMsg)
 		e.sendResponseToPLC(commandExecution.Command.CommandDefinition.CommandType, "F", errMsg)
 		return fmt.Errorf(errMsg)
 	}
 
-	// 새 오더 실행 생성
+	// 새 오더 실행 생성 (공통 ID 생성기 사용)
 	orderExecution := &models.OrderExecution{
 		CommandExecutionID: commandExecution.ID,
 		TemplateID:         mapping.TemplateID,
-		OrderID:            e.orderBuilder.GenerateOrderID(),
+		OrderID:            idgen.OrderID(),
 		ExecutionOrder:     mapping.ExecutionOrder,
 		CurrentStep:        1,
-		Status:             models.OrderExecutionStatusRunning,
+		Status:             constants.OrderExecutionStatusRunning,
 		StartedAt:          time.Now(),
 	}
 	if err := e.db.Create(orderExecution).Error; err != nil {
@@ -207,17 +209,17 @@ func (e *Executor) executeNextOrder(commandExecution *models.CommandExecution) e
 	return nil
 }
 
-// completeCommandExecution 명령 실행 완료 처리
+// completeCommandExecution 명령 실행 완료 처리 (공통 상수 사용)
 func (e *Executor) completeCommandExecution(commandExecution *models.CommandExecution) error {
 	var failedOrderCount int64
 	e.db.Model(&models.OrderExecution{}).Where("command_execution_id = ? AND status = ?",
-		commandExecution.ID, models.OrderExecutionStatusFailed).Count(&failedOrderCount)
+		commandExecution.ID, constants.OrderExecutionStatusFailed).Count(&failedOrderCount)
 
-	finalStatus := models.CommandExecutionStatusCompleted
-	finalCommandStatus := models.StatusSuccess
+	finalStatus := constants.CommandExecutionStatusCompleted
+	finalCommandStatus := constants.CommandStatusSuccess
 	if failedOrderCount > 0 {
-		finalStatus = models.CommandExecutionStatusFailed
-		finalCommandStatus = models.StatusFailure
+		finalStatus = constants.CommandExecutionStatusFailed
+		finalCommandStatus = constants.CommandStatusFailure
 	}
 
 	now := time.Now()
@@ -229,7 +231,7 @@ func (e *Executor) completeCommandExecution(commandExecution *models.CommandExec
 	return nil
 }
 
-// triggerNextOrder 다음 오더 트리거 (성공/실패에 따라)
+// TriggerNextOrder 다음 오더 트리거 (성공/실패에 따라)
 func (e *Executor) TriggerNextOrder(completedOrder *models.OrderExecution, success bool) {
 	var cmdExec models.CommandExecution
 	e.db.Preload("Command.CommandDefinition").First(&cmdExec, completedOrder.CommandExecutionID)
@@ -250,27 +252,27 @@ func (e *Executor) TriggerNextOrder(completedOrder *models.OrderExecution, succe
 	e.executeNextOrder(&cmdExec)
 }
 
-// sendResponseToPLC PLC에 응답 전송
+// sendResponseToPLC PLC에 응답 전송 (공통 상수 사용)
 func (e *Executor) sendResponseToPLC(command, status, errMsg string) {
 	if e.commandResultSender != nil {
 		e.commandResultSender.SendResponseToPLC(command, status, errMsg)
 	} else {
 		// 직접 전송 (fallback)
 		var finalStatus string
-		if status == models.StatusSuccess {
-			finalStatus = "S"
-		} else if status == models.StatusFailure {
-			finalStatus = "F"
+		if status == constants.CommandStatusSuccess {
+			finalStatus = constants.StatusSuccess
+		} else if status == constants.CommandStatusFailure {
+			finalStatus = constants.StatusFailure
 		} else {
 			finalStatus = status
 		}
 
 		response := fmt.Sprintf("%s:%s", command, finalStatus)
-		if finalStatus == "F" && errMsg != "" {
+		if finalStatus == constants.StatusFailure && errMsg != "" {
 			utils.Logger.Errorf("Command %s failed: %s", command, errMsg)
 		}
 
-		topic := e.config.PlcResponseTopic
+		topic := constants.TopicBridgeResponse
 		utils.Logger.Infof("Sending response to PLC: %s", response)
 		token := e.mqttClient.Publish(topic, 0, false, response)
 		if token.Wait() && token.Error() != nil {
@@ -279,9 +281,9 @@ func (e *Executor) sendResponseToPLC(command, status, errMsg string) {
 	}
 }
 
-// sendOrder 오더 메시지 전송
+// sendOrder 오더 메시지 전송 (공통 토픽 함수 사용)
 func (e *Executor) sendOrder(orderPayload interface{}) error {
-	topic := fmt.Sprintf("meili/v2/%s/%s/order", e.config.RobotManufacturer, e.config.RobotSerialNumber)
+	topic := constants.GetMeiliOrderTopic(e.config.RobotManufacturer, e.config.RobotSerialNumber)
 
 	msgData, err := json.Marshal(orderPayload)
 	if err != nil {
@@ -300,10 +302,10 @@ func (e *Executor) sendOrder(orderPayload interface{}) error {
 	return nil
 }
 
-// GetRunningExecutions 실행 중인 명령 실행들 조회
+// GetRunningExecutions 실행 중인 명령 실행들 조회 (공통 상수 사용)
 func (e *Executor) GetRunningExecutions() ([]models.CommandExecution, error) {
 	var executions []models.CommandExecution
-	err := e.db.Where("status = ?", models.CommandExecutionStatusRunning).
+	err := e.db.Where("status = ?", constants.CommandExecutionStatusRunning).
 		Preload("Command.CommandDefinition").Find(&executions).Error
 	return executions, err
 }
@@ -325,9 +327,9 @@ type MQTTMessageSender struct {
 	config     *config.Config
 }
 
-// SendOrderMessage 오더 메시지 전송
+// SendOrderMessage 오더 메시지 전송 (공통 토픽 함수 사용)
 func (m *MQTTMessageSender) SendOrderMessage(orderMsg *models.OrderMessage) error {
-	topic := fmt.Sprintf("meili/v2/%s/%s/order", m.config.RobotManufacturer, m.config.RobotSerialNumber)
+	topic := constants.GetMeiliOrderTopic(m.config.RobotManufacturer, m.config.RobotSerialNumber)
 
 	msgData, err := json.Marshal(orderMsg)
 	if err != nil {

@@ -1,8 +1,9 @@
-// internal/robot/handler.go
+// internal/robot/handler.go (공통 기능 적용)
 package robot
 
 import (
 	"encoding/json"
+	"mqtt-bridge/internal/common/constants"
 	"mqtt-bridge/internal/models"
 	"mqtt-bridge/internal/utils"
 	"time"
@@ -45,7 +46,7 @@ func NewHandler(statusManager *StatusManager, factsheetManager *FactsheetManager
 	return handler
 }
 
-// HandleConnectionState 로봇 연결 상태 메시지 처리
+// HandleConnectionState 로봇 연결 상태 메시지 처리 (공통 상수 사용)
 func (h *Handler) HandleConnectionState(client mqtt.Client, msg mqtt.Message) {
 	var connMsg models.ConnectionStateMessage
 	if err := json.Unmarshal(msg.Payload(), &connMsg); err != nil {
@@ -56,7 +57,7 @@ func (h *Handler) HandleConnectionState(client mqtt.Client, msg mqtt.Message) {
 	utils.Logger.Infof("Received robot connection state from topic: %s with state: %s",
 		msg.Topic(), connMsg.ConnectionState)
 
-	// 연결 상태 유효성 검사
+	// 연결 상태 유효성 검사 (공통 함수 사용)
 	if !h.statusManager.IsValidConnectionState(connMsg.ConnectionState) {
 		utils.Logger.Errorf("Invalid connection state received: %s", connMsg.ConnectionState)
 		return
@@ -123,10 +124,10 @@ func (h *Handler) GetFactsheetManager() *FactsheetManager {
 	return h.factsheetManager
 }
 
-// handleConnectionStateChange 연결 상태 변화에 따른 후속 처리
+// handleConnectionStateChange 연결 상태 변화에 따른 후속 처리 (공통 상수 사용)
 func (h *Handler) handleConnectionStateChange(connMsg *models.ConnectionStateMessage) {
 	switch connMsg.ConnectionState {
-	case models.ConnectionStateOnline:
+	case constants.ConnectionStateOnline:
 		utils.Logger.Infof("Robot %s is now ONLINE", connMsg.SerialNumber)
 
 		// 온라인 상태가 되면 팩트시트 요청
@@ -138,7 +139,7 @@ func (h *Handler) handleConnectionStateChange(connMsg *models.ConnectionStateMes
 			}()
 		}
 
-	case models.ConnectionStateOffline:
+	case constants.ConnectionStateOffline:
 		utils.Logger.Warnf("Robot %s is now OFFLINE", connMsg.SerialNumber)
 
 		// 오프라인 상태가 되면 모든 진행 중인 명령 실패 처리
@@ -146,7 +147,7 @@ func (h *Handler) handleConnectionStateChange(connMsg *models.ConnectionStateMes
 			h.commandFailureHandler.FailAllProcessingCommands("Robot went offline")
 		}
 
-	case models.ConnectionStateConnectionBroken:
+	case constants.ConnectionStateConnectionBroken:
 		utils.Logger.Errorf("Robot %s connection is BROKEN", connMsg.SerialNumber)
 
 		// 연결이 끊어지면 모든 진행 중인 명령 실패 처리
@@ -174,4 +175,14 @@ func (h *Handler) GetAllRobotStatuses() ([]models.RobotStatus, error) {
 // IsRobotOnline 특정 로봇의 온라인 상태 확인
 func (h *Handler) IsRobotOnline(serialNumber string) bool {
 	return h.statusManager.IsOnline(serialNumber)
+}
+
+// GetRobotsByManufacturer 제조사별 로봇 조회
+func (h *Handler) GetRobotsByManufacturer(manufacturer string) ([]models.RobotStatus, error) {
+	return h.statusManager.GetRobotsByManufacturer(manufacturer)
+}
+
+// GetConnectionStateCounts 연결 상태별 카운트 조회
+func (h *Handler) GetConnectionStateCounts() (map[string]int64, error) {
+	return h.statusManager.CountRobotsByState()
 }

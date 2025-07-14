@@ -1,7 +1,10 @@
-// internal/command/types.go
+// internal/command/types.go (공통 기능 적용)
 package command
 
-import "time"
+import (
+	"mqtt-bridge/internal/common/constants"
+	"time"
+)
 
 // DirectActionRequest 직접 액션 명령 요청
 type DirectActionRequest struct {
@@ -21,45 +24,17 @@ type CommandResult struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
-// ResponseStatus 응답 상태 상수
-const (
-	StatusSuccess  = "S"
-	StatusFailure  = "F"
-	StatusRejected = "R"
-)
-
-// CommandType 명령 타입 상수
-const (
-	CommandTypeInference  = 'I'
-	CommandTypeTrajectory = 'T'
-)
-
-// ArmType 팔 타입 상수
-const (
-	ArmRight      = "right"
-	ArmLeft       = "left"
-	ArmParamRight = "R"
-	ArmParamLeft  = "L"
-)
-
 // IsValidCommandType 유효한 명령 타입인지 확인
 func IsValidCommandType(cmdType rune) bool {
-	return cmdType == CommandTypeInference || cmdType == CommandTypeTrajectory
+	return cmdType == constants.CommandTypeInference || cmdType == constants.CommandTypeTrajectory
 }
 
-// ParseArmParam 팔 파라미터를 파싱
+// ParseArmParam 팔 파라미터를 파싱 (공통 함수 사용)
 func ParseArmParam(armParam string) string {
-	switch armParam {
-	case ArmParamRight, "":
-		return ArmRight
-	case ArmParamLeft:
-		return ArmLeft
-	default:
-		return ArmRight // 기본값
-	}
+	return constants.ParseArmParam(armParam)
 }
 
-// ValidateArmParam 팔 파라미터 유효성 검사
+// ValidateArmParam 팔 파라미터 유효성 검사 (공통 함수 사용)
 func ValidateArmParam(armParam string) bool {
-	return armParam == "" || armParam == ArmParamRight || armParam == ArmParamLeft
+	return constants.ValidateArmParam(armParam)
 }

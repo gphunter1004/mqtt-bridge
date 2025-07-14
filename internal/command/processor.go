@@ -1,16 +1,18 @@
-// internal/command/processor.go
+// internal/command/processor.go (공통 기능 적용)
 package command
 
 import (
 	"context"
 	"fmt"
+	"mqtt-bridge/internal/common/constants"
+	"mqtt-bridge/internal/common/redis"
 	"mqtt-bridge/internal/config"
 	"mqtt-bridge/internal/models"
 	"mqtt-bridge/internal/repository"
 	"mqtt-bridge/internal/utils"
 	"time"
 
-	"github.com/go-redis/redis/v8"
+	redisClient "github.com/go-redis/redis/v8"
 	"gorm.io/gorm"
 )
 
@@ -29,14 +31,14 @@ type WorkflowExecutor interface {
 // Processor 명령 처리 로직
 type Processor struct {
 	db               *gorm.DB
-	redisClient      *redis.Client
+	redisClient      *redisClient.Client
 	config           *config.Config
 	robotChecker     RobotStatusChecker
 	workflowExecutor WorkflowExecutor
 }
 
 // NewProcessor 새 프로세서 생성
-func NewProcessor(db *gorm.DB, redisClient *redis.Client, cfg *config.Config,
+func NewProcessor(db *gorm.DB, redisClient *redisClient.Client, cfg *config.Config,
 	robotChecker RobotStatusChecker, workflowExecutor WorkflowExecutor) *Processor {
 	return &Processor{
 		db:               db,
@@ -56,17 +58,17 @@ func (p *Processor) ProcessDirectAction(req DirectActionRequest) (*CommandResult
 	if !IsValidCommandType(req.CommandType) {
 		return &CommandResult{
 			Command:   req.FullCommand,
-			Status:    StatusFailure,
+			Status:    constants.StatusFailure,
 			Message:   fmt.Sprintf("Invalid command type: %c", req.CommandType),
 			Timestamp: time.Now(),
 		}, nil
 	}
 
 	// 팔 파라미터 유효성 검사 (T 타입인 경우)
-	if req.CommandType == CommandTypeTrajectory && !ValidateArmParam(req.ArmParam) {
+	if req.CommandType == constants.CommandTypeTrajectory && !ValidateArmParam(req.ArmParam) {
 		return &CommandResult{
 			Command:   req.FullCommand,
-			Status:    StatusFailure,
+			Status:    constants.StatusFailure,
 			Message:   fmt.Sprintf("Invalid arm parameter: %s (use R or L)", req.ArmParam),
 			Timestamp: time.Now(),
 		}, nil
@@ -76,7 +78,7 @@ func (p *Processor) ProcessDirectAction(req DirectActionRequest) (*CommandResult
 	if !p.robotChecker.IsOnline(p.config.RobotSerialNumber) {
 		return &CommandResult{
 			Command:   req.FullCommand,
-			Status:    StatusFailure,
+			Status:    constants.StatusFailure,
 			Message:   "Robot is not online",
 			Timestamp: time.Now(),
 		}, nil
@@ -87,13 +89,13 @@ func (p *Processor) ProcessDirectAction(req DirectActionRequest) (*CommandResult
 	if err != nil {
 		return &CommandResult{
 			Command:   req.FullCommand,
-			Status:    StatusFailure,
+			Status:    constants.StatusFailure,
 			Message:   fmt.Sprintf("Failed to send order: %v", err),
 			Timestamp: time.Now(),
 		}, err
 	}
 
-	// Redis에 대기 중인 명령 저장
+	// Redis에 대기 중인 명령 저장 (공통 키 생성기 사용)
 	if err := p.storePendingDirectCommand(req.FullCommand, orderID); err != nil {
 		utils.Logger.Errorf("Failed to store pending command: %v", err)
 		// Redis 저장 실패해도 명령은 이미 전송됨
@@ -104,7 +106,7 @@ func (p *Processor) ProcessDirectAction(req DirectActionRequest) (*CommandResult
 
 	return &CommandResult{
 		Command:   req.FullCommand,
-		Status:    StatusSuccess,
+		Status:    constants.StatusSuccess,
 		OrderID:   orderID,
 		Message:   "Order sent successfully",
 		Timestamp: time.Now(),
@@ -120,21 +122,21 @@ func (p *Processor) ProcessStandardCommand(command *models.Command) (*CommandRes
 		command.CommandDefinition.CommandType, command.ID)
 
 	// 취소 명령 특별 처리
-	if command.CommandDefinition.CommandType == models.CommandOrderCancel {
+	if command.CommandDefinition.CommandType == constants.CommandOrderCancel {
 		if err := p.workflowExecutor.CancelAllRunningOrders(); err != nil {
-			repository.UpdateCommandStatus(p.db, command, models.StatusFailure, err.Error())
+			repository.UpdateCommandStatus(p.db, command, constants.CommandStatusFailure, err.Error())
 			return &CommandResult{
 				Command:   command.CommandDefinition.CommandType,
-				Status:    StatusFailure,
+				Status:    constants.StatusFailure,
 				Message:   err.Error(),
 				Timestamp: time.Now(),
 			}, nil
 		}
 
-		repository.UpdateCommandStatus(p.db, command, models.StatusSuccess, "")
+		repository.UpdateCommandStatus(p.db, command, constants.CommandStatusSuccess, "")
 		return &CommandResult{
 			Command:   command.CommandDefinition.CommandType,
-			Status:    StatusSuccess,
+			Status:    constants.StatusSuccess,
 			Message:   "All orders cancelled",
 			Timestamp: time.Now(),
 		}, nil
@@ -143,25 +145,25 @@ func (p *Processor) ProcessStandardCommand(command *models.Command) (*CommandRes
 	// 로봇 온라인 상태 확인
 	if !p.robotChecker.IsOnline(p.config.RobotSerialNumber) {
 		errMsg := "Robot is not online"
-		repository.UpdateCommandStatus(p.db, command, models.StatusFailure, errMsg)
+		repository.UpdateCommandStatus(p.db, command, constants.CommandStatusFailure, errMsg)
 		return &CommandResult{
 			Command:   command.CommandDefinition.CommandType,
-			Status:    StatusFailure,
+			Status:    constants.StatusFailure,
 			Message:   errMsg,
 			Timestamp: time.Now(),
 		}, nil
 	}
 
 	// 처리 상태로 업데이트
-	repository.UpdateCommandStatus(p.db, command, models.StatusProcessing, "")
+	repository.UpdateCommandStatus(p.db, command, constants.CommandStatusProcessing, "")
 
 	// 워크플로우 실행
 	if err := p.workflowExecutor.ExecuteCommandOrder(command); err != nil {
 		errMsg := fmt.Sprintf("Failed to start command execution: %v", err)
-		repository.UpdateCommandStatus(p.db, command, models.StatusFailure, errMsg)
+		repository.UpdateCommandStatus(p.db, command, constants.CommandStatusFailure, errMsg)
 		return &CommandResult{
 			Command:   command.CommandDefinition.CommandType,
-			Status:    StatusFailure,
+			Status:    constants.StatusFailure,
 			Message:   errMsg,
 			Timestamp: time.Now(),
 		}, err
@@ -169,7 +171,7 @@ func (p *Processor) ProcessStandardCommand(command *models.Command) (*CommandRes
 
 	return &CommandResult{
 		Command:   command.CommandDefinition.CommandType,
-		Status:    StatusSuccess,
+		Status:    constants.StatusSuccess,
 		Message:   "Command execution started",
 		Timestamp: time.Now(),
 	}, nil
@@ -182,7 +184,7 @@ func (p *Processor) HandleDirectCommandStateUpdate(stateMsg *models.RobotStateMe
 	}
 
 	ctx := context.Background()
-	key := fmt.Sprintf("pending_direct_command:%s", stateMsg.OrderID)
+	key := redis.PendingDirectCommand(stateMsg.OrderID) // 공통 키 생성기 사용
 
 	// Redis에서 대기 중인 명령 확인
 	commandData, err := p.redisClient.HGetAll(ctx, key).Result()
@@ -221,7 +223,7 @@ func (p *Processor) FailAllPendingCommands(reason string) []CommandResult {
 	var results []CommandResult
 
 	ctx := context.Background()
-	pattern := "pending_direct_command:*"
+	pattern := redis.AllPendingDirectCommands() // 공통 패턴 사용
 	keys, err := p.redisClient.Keys(ctx, pattern).Result()
 	if err != nil {
 		utils.Logger.Errorf("Failed to get pending commands: %v", err)
@@ -237,7 +239,7 @@ func (p *Processor) FailAllPendingCommands(reason string) []CommandResult {
 			if fullCommand != "" {
 				results = append(results, CommandResult{
 					Command:   fullCommand,
-					Status:    StatusFailure,
+					Status:    constants.StatusFailure,
 					OrderID:   orderID,
 					Message:   reason,
 					Timestamp: time.Now(),
@@ -254,7 +256,7 @@ func (p *Processor) FailAllPendingCommands(reason string) []CommandResult {
 // storePendingDirectCommand Redis에 대기 중인 직접 명령 저장
 func (p *Processor) storePendingDirectCommand(fullCommand, orderID string) error {
 	ctx := context.Background()
-	key := fmt.Sprintf("pending_direct_command:%s", orderID)
+	key := redis.PendingDirectCommand(orderID) // 공통 키 생성기 사용
 
 	commandData := map[string]interface{}{
 		"full_command": fullCommand,
@@ -276,9 +278,9 @@ func (p *Processor) determineDirectCommandResult(actionStates []models.ActionSta
 
 	for _, action := range actionStates {
 		switch action.ActionStatus {
-		case models.ActionStatusFailed:
+		case constants.ActionStatusFailed:
 			hasFailure = true
-		case models.ActionStatusFinished:
+		case constants.ActionStatusFinished:
 			continue
 		default:
 			allFinished = false
@@ -286,11 +288,11 @@ func (p *Processor) determineDirectCommandResult(actionStates []models.ActionSta
 	}
 
 	if hasFailure {
-		return StatusFailure
+		return constants.StatusFailure
 	}
 
 	if allFinished {
-		return StatusSuccess
+		return constants.StatusSuccess
 	}
 
 	return "" // 아직 진행 중

@@ -1,15 +1,17 @@
-// internal/workflow/step_manager.go
+// internal/workflow/step_manager.go (공통 기능 적용)
 package workflow
 
 import (
 	"context"
 	"fmt"
+	"mqtt-bridge/internal/common/constants"
+	"mqtt-bridge/internal/common/redis"
 	"mqtt-bridge/internal/models"
 	"mqtt-bridge/internal/repository"
 	"mqtt-bridge/internal/utils"
 	"time"
 
-	"github.com/go-redis/redis/v8"
+	redisClient "github.com/go-redis/redis/v8"
 	"gorm.io/gorm"
 )
 
@@ -21,13 +23,13 @@ type MessageSender interface {
 // StepManager 워크플로우 단계 관리
 type StepManager struct {
 	db            *gorm.DB
-	redisClient   *redis.Client
+	redisClient   *redisClient.Client
 	orderBuilder  *OrderBuilder
 	messageSender MessageSender
 }
 
 // NewStepManager 새 단계 관리자 생성
-func NewStepManager(db *gorm.DB, redisClient *redis.Client, orderBuilder *OrderBuilder, messageSender MessageSender) *StepManager {
+func NewStepManager(db *gorm.DB, redisClient *redisClient.Client, orderBuilder *OrderBuilder, messageSender MessageSender) *StepManager {
 	return &StepManager{
 		db:            db,
 		redisClient:   redisClient,
@@ -49,7 +51,7 @@ func (s *StepManager) ExecuteNextStep(execution *models.OrderExecution, template
 	if currentOrderStep == nil {
 		// 모든 단계 완료
 		now := time.Now()
-		repository.UpdateOrderExecutionStatus(s.db, execution, models.OrderExecutionStatusCompleted, &now)
+		repository.UpdateOrderExecutionStatus(s.db, execution, constants.OrderExecutionStatusCompleted, &now)
 		utils.Logger.Infof("Order execution completed: %s", execution.OrderID)
 		return
 	}
@@ -59,7 +61,7 @@ func (s *StepManager) ExecuteNextStep(execution *models.OrderExecution, template
 	stepExecution := &models.StepExecution{
 		ExecutionID:         execution.ID,
 		StepOrder:           currentOrderStep.StepOrder,
-		Status:              models.StepExecutionStatusRunning,
+		Status:              constants.StepExecutionStatusRunning,
 		ExpectedActionCount: len(currentOrderStep.StepActionMappings),
 		StartedAt:           time.Now(),
 	}
@@ -68,7 +70,7 @@ func (s *StepManager) ExecuteNextStep(execution *models.OrderExecution, template
 	// 오더 메시지 생성
 	orderMsg := s.orderBuilder.BuildOrderMessage(execution, currentOrderStep)
 
-	// Redis에 액션 상태 초기화
+	// Redis에 액션 상태 초기화 (공통 키 생성기 사용)
 	s.initializeActionStatusInRedis(stepExecution, orderMsg)
 
 	// 로봇에 오더 전송
@@ -83,7 +85,7 @@ func (s *StepManager) ExecuteNextStep(execution *models.OrderExecution, template
 	// WaitForCompletion이 false인 경우에만 즉시 다음 단계로 진행
 	if !currentOrderStep.WaitForCompletion {
 		now := time.Now()
-		repository.UpdateStepExecutionStatus(s.db, stepExecution, models.StepExecutionStatusFinished, models.PreviousResultSuccess, "", &now)
+		repository.UpdateStepExecutionStatus(s.db, stepExecution, constants.StepExecutionStatusFinished, constants.PreviousResultSuccess, "", &now)
 		execution.CurrentStep++
 		s.db.Save(execution)
 		s.ExecuteNextStep(execution, template)
@@ -98,7 +100,7 @@ func (s *StepManager) HandleStepCompletion(stateMsg *models.RobotStateMessage) b
 
 	var stepExecution models.StepExecution
 	err := s.db.Joins("JOIN order_executions ON step_executions.execution_id = order_executions.id").
-		Where("order_executions.order_id = ? AND step_executions.status = ?", stateMsg.OrderID, models.StepExecutionStatusRunning).
+		Where("order_executions.order_id = ? AND step_executions.status = ?", stateMsg.OrderID, constants.StepExecutionStatusRunning).
 		Preload("Execution.Template").
 		First(&stepExecution).Error
 	if err != nil {
@@ -106,7 +108,7 @@ func (s *StepManager) HandleStepCompletion(stateMsg *models.RobotStateMessage) b
 	}
 
 	ctx := context.Background()
-	redisKey := fmt.Sprintf("step_actions:%d", stepExecution.ID)
+	redisKey := redis.StepActions(int(stepExecution.ID)) // 공통 키 생성기 사용
 
 	// 액션 상태 업데이트
 	for _, actionState := range stateMsg.ActionStates {
@@ -128,14 +130,14 @@ func (s *StepManager) HandleStepCompletion(stateMsg *models.RobotStateMessage) b
 	// Redis 정리
 	s.redisClient.Del(ctx, redisKey)
 
-	if stepResult == models.PreviousResultFailure {
+	if stepResult == constants.PreviousResultFailure {
 		s.handleStepFailure(&stepExecution, &stepExecution.Execution, "Action failed or robot reported a critical error.")
 		return true
 	}
 
 	// 단계 완료 처리
 	now := time.Now()
-	repository.UpdateStepExecutionStatus(s.db, &stepExecution, models.StepExecutionStatusFinished, models.PreviousResultSuccess, "", &now)
+	repository.UpdateStepExecutionStatus(s.db, &stepExecution, constants.StepExecutionStatusFinished, constants.PreviousResultSuccess, "", &now)
 
 	execution := stepExecution.Execution
 	execution.CurrentStep++
@@ -148,33 +150,33 @@ func (s *StepManager) HandleStepCompletion(stateMsg *models.RobotStateMessage) b
 	return true
 }
 
-// CancelRunningSteps 실행 중인 단계들 취소
+// CancelRunningSteps 실행 중인 단계들 취소 (공통 상수 사용)
 func (s *StepManager) CancelRunningSteps(orderExecutionID uint, reason string) {
 	var stepExecutions []models.StepExecution
-	s.db.Where("execution_id = ? AND status = ?", orderExecutionID, models.StepExecutionStatusRunning).
+	s.db.Where("execution_id = ? AND status = ?", orderExecutionID, constants.StepExecutionStatusRunning).
 		Find(&stepExecutions)
 
 	for _, stepExec := range stepExecutions {
 		now := time.Now()
-		repository.UpdateStepExecutionStatus(s.db, &stepExec, models.StepExecutionStatusFailed, "", reason, &now)
+		repository.UpdateStepExecutionStatus(s.db, &stepExec, constants.StepExecutionStatusFailed, "", reason, &now)
 
-		// Redis 정리
+		// Redis 정리 (공통 키 생성기 사용)
 		ctx := context.Background()
-		redisKey := fmt.Sprintf("step_actions:%d", stepExec.ID)
+		redisKey := redis.StepActions(int(stepExec.ID))
 		s.redisClient.Del(ctx, redisKey)
 	}
 }
 
-// initializeActionStatusInRedis Redis에 액션 상태 초기화
+// initializeActionStatusInRedis Redis에 액션 상태 초기화 (공통 키 생성기 사용)
 func (s *StepManager) initializeActionStatusInRedis(stepExec *models.StepExecution, orderMsg *models.OrderMessage) {
 	ctx := context.Background()
-	redisKey := fmt.Sprintf("step_actions:%d", stepExec.ID)
+	redisKey := redis.StepActions(int(stepExec.ID)) // 공통 키 생성기 사용
 	s.redisClient.Del(ctx, redisKey)
 
 	pipe := s.redisClient.Pipeline()
 	for _, node := range orderMsg.Nodes {
 		for _, action := range node.Actions {
-			pipe.HSet(ctx, redisKey, action.ActionID, models.ActionStatusWaiting)
+			pipe.HSet(ctx, redisKey, action.ActionID, constants.ActionStatusWaiting)
 		}
 	}
 
@@ -184,21 +186,21 @@ func (s *StepManager) initializeActionStatusInRedis(stepExec *models.StepExecuti
 	}
 }
 
-// handleStepFailure 단계 실패 처리
+// handleStepFailure 단계 실패 처리 (공통 상수 사용)
 func (s *StepManager) handleStepFailure(step *models.StepExecution, order *models.OrderExecution, reason string) {
 	now := time.Now()
-	repository.UpdateStepExecutionStatus(s.db, step, models.StepExecutionStatusFailed, "", reason, &now)
-	repository.UpdateOrderExecutionStatus(s.db, order, models.OrderExecutionStatusFailed, &now)
+	repository.UpdateStepExecutionStatus(s.db, step, constants.StepExecutionStatusFailed, "", reason, &now)
+	repository.UpdateOrderExecutionStatus(s.db, order, constants.OrderExecutionStatusFailed, &now)
 
-	// Redis 정리
+	// Redis 정리 (공통 키 생성기 사용)
 	ctx := context.Background()
-	redisKey := fmt.Sprintf("step_actions:%d", step.ID)
+	redisKey := redis.StepActions(int(step.ID))
 	s.redisClient.Del(ctx, redisKey)
 
 	utils.Logger.Errorf("Step %d failed for order %s: %s", step.StepOrder, order.OrderID, reason)
 }
 
-// determineStepResultFromMap 액션 상태 맵을 기반으로 단계 결과 결정
+// determineStepResultFromMap 액션 상태 맵을 기반으로 단계 결과 결정 (공통 상수 사용)
 func (s *StepManager) determineStepResultFromMap(statuses map[string]string, stepExec *models.StepExecution) string {
 	if len(statuses) < stepExec.ExpectedActionCount {
 		return ""
@@ -207,9 +209,9 @@ func (s *StepManager) determineStepResultFromMap(statuses map[string]string, ste
 	allFinished := true
 	for _, status := range statuses {
 		switch status {
-		case models.ActionStatusFailed:
-			return models.PreviousResultFailure
-		case models.ActionStatusFinished:
+		case constants.ActionStatusFailed:
+			return constants.PreviousResultFailure
+		case constants.ActionStatusFinished:
 			continue
 		default:
 			allFinished = false
@@ -217,16 +219,16 @@ func (s *StepManager) determineStepResultFromMap(statuses map[string]string, ste
 	}
 
 	if allFinished {
-		return models.PreviousResultSuccess
+		return constants.PreviousResultSuccess
 	}
 
 	return ""
 }
 
-// GetRunningSteps 실행 중인 단계들 조회
+// GetRunningSteps 실행 중인 단계들 조회 (공통 상수 사용)
 func (s *StepManager) GetRunningSteps() ([]models.StepExecution, error) {
 	var steps []models.StepExecution
-	err := s.db.Where("status = ?", models.StepExecutionStatusRunning).
+	err := s.db.Where("status = ?", constants.StepExecutionStatusRunning).
 		Preload("Execution").Find(&steps).Error
 	return steps, err
 }
