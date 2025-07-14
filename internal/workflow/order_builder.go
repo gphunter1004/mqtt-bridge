@@ -1,19 +1,17 @@
-// internal/mqtt/test.go (완전한 버전)
-package mqtt
+// internal/workflow/order_builder.go
+package workflow
 
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"mqtt-bridge/internal/config"
 	"mqtt-bridge/internal/models"
 	"mqtt-bridge/internal/utils"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
-
-	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
 // Float64 항상 소수점을 포함하는 float64
@@ -81,91 +79,29 @@ type DirectOrderEdge struct {
 	Released        bool    `json:"released"`
 }
 
-// OrderSubscriber Order 토픽 구독하여 전송 검증
-type OrderSubscriber struct {
-	mqttClient   mqtt.Client
-	config       *config.Config
-	lastOrderID  string
-	lastReceived time.Time
+// OrderBuilder 오더 메시지 생성기
+type OrderBuilder struct {
+	config *config.Config
 }
 
-func NewOrderSubscriber(mqttClient mqtt.Client, cfg *config.Config) *OrderSubscriber {
-	return &OrderSubscriber{
-		mqttClient: mqttClient,
-		config:     cfg,
+// NewOrderBuilder 새 오더 빌더 생성
+func NewOrderBuilder(cfg *config.Config) *OrderBuilder {
+	return &OrderBuilder{
+		config: cfg,
 	}
 }
 
-// Subscribe order 토픽을 구독하여 전송된 데이터 확인
-func (s *OrderSubscriber) Subscribe() error {
-	orderTopic := fmt.Sprintf("meili/v2/%s/%s/order", s.config.RobotManufacturer, s.config.RobotSerialNumber)
-
-	token := s.mqttClient.Subscribe(orderTopic, 0, s.handleOrderMessage)
-	if token.Wait() && token.Error() != nil {
-		return token.Error()
-	}
-
-	return nil
-}
-
-// handleOrderMessage 수신된 order 메시지를 로그로 출력 (검증용)
-func (s *OrderSubscriber) handleOrderMessage(client mqtt.Client, msg mqtt.Message) {
-	// 중복 메시지 필터링
-	var orderData map[string]interface{}
-	if err := json.Unmarshal(msg.Payload(), &orderData); err != nil {
-		return
-	}
-
-	orderID, ok := orderData["orderId"].(string)
-	if !ok {
-		return
-	}
-
-	now := time.Now()
-
-	// 같은 orderID가 1초 이내에 들어오면 무시
-	if s.lastOrderID == orderID && now.Sub(s.lastReceived) < time.Second {
-		return
-	}
-
-	s.lastOrderID = orderID
-	s.lastReceived = now
-
-	utils.Logger.Infof("🔍 RECEIVED ORDER: %s", string(msg.Payload()))
-}
-
-type OrderMessageHandler struct {
-	mqttClient      mqtt.Client
-	config          *config.Config
-	orderSubscriber *OrderSubscriber
-}
-
-func NewOrderMessageHandler(mqttClient mqtt.Client, cfg *config.Config) *OrderMessageHandler {
-	handler := &OrderMessageHandler{
-		mqttClient: mqttClient,
-		config:     cfg,
-	}
-
-	// Order Subscriber 생성 및 구독 시작
-	handler.orderSubscriber = NewOrderSubscriber(mqttClient, cfg)
-	if err := handler.orderSubscriber.Subscribe(); err != nil {
-		utils.Logger.Errorf("Failed to start order subscription: %v", err)
-	}
-
-	return handler
-}
-
-// BuildOrderMessage 오더 메시지 생성
-func (h *OrderMessageHandler) BuildOrderMessage(execution *models.OrderExecution, step *models.OrderStep) *models.OrderMessage {
-	node := h.buildOrderNode(step)
-	edges := h.buildOrderEdges(step)
+// BuildOrderMessage 표준 오더 메시지 생성
+func (b *OrderBuilder) BuildOrderMessage(execution *models.OrderExecution, step *models.OrderStep) *models.OrderMessage {
+	node := b.buildOrderNode(step)
+	edges := b.buildOrderEdges(step)
 
 	return &models.OrderMessage{
 		HeaderID:      utils.GetNextHeaderID(),
 		Timestamp:     time.Now().Format(time.RFC3339Nano),
 		Version:       "2.0.0",
-		Manufacturer:  h.config.RobotManufacturer,
-		SerialNumber:  h.config.RobotSerialNumber,
+		Manufacturer:  b.config.RobotManufacturer,
+		SerialNumber:  b.config.RobotSerialNumber,
 		OrderID:       execution.OrderID,
 		OrderUpdateID: 0,
 		Nodes:         []models.OrderNode{node},
@@ -173,33 +109,64 @@ func (h *OrderMessageHandler) BuildOrderMessage(execution *models.OrderExecution
 	}
 }
 
-// SendDirectActionOrder :I 또는 :T 명령을 처리하는 함수
-func (h *OrderMessageHandler) SendDirectActionOrder(baseCommand string, commandType rune) error {
-	var actionType, paramKey string
+// BuildDirectActionOrder 직접 액션 오더 메시지 생성
+func (b *OrderBuilder) BuildDirectActionOrder(baseCommand string, commandType rune, armParam string) (*DirectOrderMessage, string, error) {
+	var actionType string
+	var actionParameters []DirectOrderActionParameter
 
 	switch commandType {
 	case 'I':
 		actionType = "Roboligent Robin - Inference"
-		paramKey = "inference_name"
+		actionParameters = []DirectOrderActionParameter{
+			{
+				Key:   "inference_name",
+				Value: baseCommand,
+			},
+		}
 	case 'T':
 		actionType = "Roboligent Robin - Follow Trajectory"
-		paramKey = "trajectory_name"
+		actionParameters = []DirectOrderActionParameter{
+			{
+				Key:   "trajectory_name",
+				Value: baseCommand,
+			},
+		}
+
+		// arm 파라미터 처리
+		arm := "right" // 기본값
+		if armParam != "" {
+			switch strings.ToUpper(armParam) {
+			case "R":
+				arm = "right"
+			case "L":
+				arm = "left"
+			default:
+				return nil, "", fmt.Errorf("invalid arm parameter: %s (use R or L)", armParam)
+			}
+		}
+
+		actionParameters = append(actionParameters, DirectOrderActionParameter{
+			Key:   "arm",
+			Value: arm,
+		})
+
 	default:
-		return fmt.Errorf("invalid direct action command type: %c", commandType)
+		return nil, "", fmt.Errorf("invalid direct action command type: %c", commandType)
 	}
 
-	// 구조체를 사용하여 커스텀 마샬링 적용
-	directOrder := DirectOrderMessage{
+	orderID := b.GenerateOrderID()
+
+	directOrder := &DirectOrderMessage{
 		HeaderID:      utils.GetNextHeaderID(),
 		Timestamp:     time.Now().Format(time.RFC3339Nano),
 		Version:       "2.0.0",
-		Manufacturer:  h.config.RobotManufacturer,
-		SerialNumber:  h.config.RobotSerialNumber,
-		OrderID:       h.GenerateOrderID(),
+		Manufacturer:  b.config.RobotManufacturer,
+		SerialNumber:  b.config.RobotSerialNumber,
+		OrderID:       orderID,
 		OrderUpdateID: 0,
 		Nodes: []DirectOrderNode{
 			{
-				NodeID:      h.GenerateNodeID(),
+				NodeID:      b.GenerateNodeID(),
 				Description: fmt.Sprintf("Direct action for command %s", baseCommand),
 				SequenceID:  1,
 				Released:    true,
@@ -214,15 +181,10 @@ func (h *OrderMessageHandler) SendDirectActionOrder(baseCommand string, commandT
 				Actions: []DirectOrderAction{
 					{
 						ActionType:        actionType,
-						ActionID:          h.GenerateActionID(),
+						ActionID:          b.GenerateActionID(),
 						ActionDescription: fmt.Sprintf("Execute %s for %s", actionType, baseCommand),
 						BlockingType:      "NONE",
-						ActionParameters: []DirectOrderActionParameter{
-							{
-								Key:   paramKey,
-								Value: baseCommand,
-							},
-						},
+						ActionParameters:  actionParameters,
 					},
 				},
 			},
@@ -230,41 +192,19 @@ func (h *OrderMessageHandler) SendDirectActionOrder(baseCommand string, commandT
 		Edges: []DirectOrderEdge{},
 	}
 
-	return h.SendOrder(directOrder)
+	return directOrder, orderID, nil
 }
 
-// SendOrder 로봇에 오더 전송
-func (h *OrderMessageHandler) SendOrder(orderPayload interface{}) error {
-	topic := fmt.Sprintf("meili/v2/%s/%s/order", h.config.RobotManufacturer, h.config.RobotSerialNumber)
-
-	msgData, err := json.Marshal(orderPayload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal order message: %v", err)
-	}
-
-	// 최종 전송 메시지 로그
-	utils.Logger.Infof("📤 SENDING ORDER: %s", string(msgData))
-
-	token := h.mqttClient.Publish(topic, 0, false, msgData)
-	token.Wait()
-
-	if token.Error() != nil {
-		return fmt.Errorf("MQTT publish failed: %v", token.Error())
-	}
-
-	return nil
-}
-
-// SendCancelOrder 로봇에 cancelOrder 요청 전송
-func (h *OrderMessageHandler) SendCancelOrder() error {
-	actionID := h.generateActionID()
+// BuildCancelOrderMessage 취소 오더 메시지 생성
+func (b *OrderBuilder) BuildCancelOrderMessage() (map[string]interface{}, error) {
+	actionID := b.generateActionID()
 
 	request := map[string]interface{}{
 		"headerId":     utils.GetNextHeaderID(),
 		"timestamp":    time.Now().Format(time.RFC3339Nano),
 		"version":      "2.0.0",
-		"manufacturer": h.config.RobotManufacturer,
-		"serialNumber": h.config.RobotSerialNumber,
+		"manufacturer": b.config.RobotManufacturer,
+		"serialNumber": b.config.RobotSerialNumber,
 		"actions": []map[string]interface{}{
 			{
 				"actionType":       "cancelOrder",
@@ -275,29 +215,12 @@ func (h *OrderMessageHandler) SendCancelOrder() error {
 		},
 	}
 
-	reqData, err := json.Marshal(request)
-	if err != nil {
-		return fmt.Errorf("failed to marshal cancelOrder request: %v", err)
-	}
-
-	topic := fmt.Sprintf("meili/v2/%s/%s/instantActions", h.config.RobotManufacturer, h.config.RobotSerialNumber)
-
-	// 최종 전송 메시지 로그
-	utils.Logger.Infof("📤 SENDING CANCEL ORDER: %s", string(reqData))
-
-	token := h.mqttClient.Publish(topic, 0, false, reqData)
-	token.Wait()
-
-	if token.Error() != nil {
-		return fmt.Errorf("MQTT publish failed: %v", token.Error())
-	}
-
-	return nil
+	return request, nil
 }
 
 // buildOrderNode 오더 노드 생성
-func (h *OrderMessageHandler) buildOrderNode(step *models.OrderStep) models.OrderNode {
-	nodeID := h.GenerateNodeID()
+func (b *OrderBuilder) buildOrderNode(step *models.OrderStep) models.OrderNode {
+	nodeID := b.GenerateNodeID()
 
 	nodePos := models.NodePosition{
 		X:                     models.Float64(0.0),
@@ -326,10 +249,10 @@ func (h *OrderMessageHandler) buildOrderNode(step *models.OrderStep) models.Orde
 		actionTemplate := mapping.ActionTemplate
 		action := models.OrderAction{
 			ActionType:        actionTemplate.ActionType,
-			ActionID:          h.GenerateActionID(),
+			ActionID:          b.GenerateActionID(),
 			ActionDescription: actionTemplate.ActionDescription,
 			BlockingType:      actionTemplate.BlockingType,
-			ActionParameters:  h.buildActionParameters(actionTemplate.Parameters),
+			ActionParameters:  b.buildActionParameters(actionTemplate.Parameters),
 		}
 		actions = append(actions, action)
 	}
@@ -345,12 +268,12 @@ func (h *OrderMessageHandler) buildOrderNode(step *models.OrderStep) models.Orde
 }
 
 // buildOrderEdges 오더 엣지 생성
-func (h *OrderMessageHandler) buildOrderEdges(step *models.OrderStep) []models.OrderEdge {
+func (b *OrderBuilder) buildOrderEdges(step *models.OrderStep) []models.OrderEdge {
 	edges := make([]models.OrderEdge, 0, len(step.Edges))
 
 	for i, edgeTemplate := range step.Edges {
 		edge := models.OrderEdge{
-			EdgeID:          h.GenerateEdgeID(),
+			EdgeID:          b.GenerateEdgeID(),
 			SequenceID:      i,
 			StartNodeID:     edgeTemplate.StartNodeID,
 			EndNodeID:       edgeTemplate.EndNodeID,
@@ -369,7 +292,7 @@ func (h *OrderMessageHandler) buildOrderEdges(step *models.OrderStep) []models.O
 }
 
 // buildActionParameters 액션 파라미터 생성
-func (h *OrderMessageHandler) buildActionParameters(params []models.ActionParameter) []models.OrderActionParameter {
+func (b *OrderBuilder) buildActionParameters(params []models.ActionParameter) []models.OrderActionParameter {
 	actionParams := make([]models.OrderActionParameter, 0, len(params))
 
 	for _, param := range params {
@@ -403,31 +326,31 @@ func (h *OrderMessageHandler) buildActionParameters(params []models.ActionParame
 }
 
 // ID 생성 함수들
-func (h *OrderMessageHandler) GenerateOrderID() string {
+func (b *OrderBuilder) GenerateOrderID() string {
 	randomBytes := make([]byte, 16)
 	rand.Read(randomBytes)
 	return hex.EncodeToString(randomBytes)
 }
 
-func (h *OrderMessageHandler) GenerateNodeID() string {
+func (b *OrderBuilder) GenerateNodeID() string {
 	randomBytes := make([]byte, 16)
 	rand.Read(randomBytes)
 	return hex.EncodeToString(randomBytes)
 }
 
-func (h *OrderMessageHandler) GenerateActionID() string {
+func (b *OrderBuilder) GenerateActionID() string {
 	randomBytes := make([]byte, 16)
 	rand.Read(randomBytes)
 	return hex.EncodeToString(randomBytes)
 }
 
-func (h *OrderMessageHandler) GenerateEdgeID() string {
+func (b *OrderBuilder) GenerateEdgeID() string {
 	randomBytes := make([]byte, 16)
 	rand.Read(randomBytes)
 	return hex.EncodeToString(randomBytes)
 }
 
-func (h *OrderMessageHandler) generateActionID() string {
+func (b *OrderBuilder) generateActionID() string {
 	randomBytes := make([]byte, 16)
 	if _, err := rand.Read(randomBytes); err != nil {
 		return fmt.Sprintf("action_%d", time.Now().UnixNano())
