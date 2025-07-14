@@ -1,5 +1,7 @@
-// internal/models/robot_state.go (수정된 버전 - DB 모델 삭제)
+// internal/models/robot_state.go (수정된 버전 - 공통 기능 적용)
 package models
+
+import "mqtt-bridge/internal/common/constants"
 
 // RobotStateMessage 로봇 상태 메시지
 type RobotStateMessage struct {
@@ -140,83 +142,22 @@ type PoseValue struct {
 	Y          float64 `json:"y"`
 }
 
-// 운영 모드 상수
-const (
-	OperatingModeAutomatic     = "AUTOMATIC"
-	OperatingModeManual        = "MANUAL"
-	OperatingModeSemiautomatic = "SEMIAUTOMATIC"
-	OperatingModeService       = "SERVICE"
-	OperatingModeTeach         = "TEACH"
-)
-
-// 액션 상태 상수
-const (
-	ActionStatusWaiting      = "WAITING"
-	ActionStatusInitializing = "INITIALIZING"
-	ActionStatusRunning      = "RUNNING"
-	ActionStatusPaused       = "PAUSED"
-	ActionStatusFinished     = "FINISHED"
-	ActionStatusFailed       = "FAILED"
-)
-
-// E-Stop 상태 상수
-const (
-	EStopNone      = "NONE"
-	EStopAutoAck   = "AUTOACK"
-	EStopManualAck = "MANUALACK"
-)
-
-// 액션 타입 상수
-const (
-	ActionTypeInitPosition     = "initPosition"
-	ActionTypeFactsheetRequest = "factsheetRequest"
-)
-
-// 블로킹 타입은 order.go에서 정의됨 (중복 제거)
-
-// IsValidOperatingMode 유효한 운영 모드인지 확인
+// IsValidOperatingMode 유효한 운영 모드인지 확인 (공통 함수 사용)
 func IsValidOperatingMode(mode string) bool {
-	validModes := []string{
-		OperatingModeAutomatic,
-		OperatingModeManual,
-		OperatingModeSemiautomatic,
-		OperatingModeService,
-		OperatingModeTeach,
-	}
-
-	for _, validMode := range validModes {
-		if mode == validMode {
-			return true
-		}
-	}
-	return false
+	return constants.IsValidOperatingMode(mode)
 }
 
-// IsValidActionStatus 유효한 액션 상태인지 확인
+// IsValidActionStatus 유효한 액션 상태인지 확인 (공통 함수 사용)
 func IsValidActionStatus(status string) bool {
-	validStatuses := []string{
-		ActionStatusWaiting,
-		ActionStatusInitializing,
-		ActionStatusRunning,
-		ActionStatusPaused,
-		ActionStatusFinished,
-		ActionStatusFailed,
-	}
-
-	for _, validStatus := range validStatuses {
-		if status == validStatus {
-			return true
-		}
-	}
-	return false
+	return constants.IsValidActionStatus(status)
 }
 
 // IsValidEStopStatus 유효한 E-Stop 상태인지 확인
 func IsValidEStopStatus(status string) bool {
 	validStatuses := []string{
-		EStopNone,
-		EStopAutoAck,
-		EStopManualAck,
+		constants.EStopNone,
+		constants.EStopAutoAck,
+		constants.EStopManualAck,
 	}
 
 	for _, validStatus := range validStatuses {

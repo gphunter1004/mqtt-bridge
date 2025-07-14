@@ -1,7 +1,8 @@
-// internal/models/command.go (수정된 최종 버전)
+// internal/models/command.go
 package models
 
 import (
+	"mqtt-bridge/internal/common/constants"
 	"time"
 
 	"gorm.io/gorm"
@@ -179,30 +180,7 @@ type RobotFactsheet struct {
 	DeletedAt         gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 }
 
-// 상태 상수
-const (
-	StatusPending    = "PENDING"
-	StatusProcessing = "PROCESSING"
-	StatusSuccess    = "SUCCESS"
-	StatusFailure    = "FAILURE"
-	StatusAbnormal   = "ABNORMAL"
-	StatusNormal     = "NORMAL"
-	StatusRejected   = "REJECTED"
-)
-
-// 로봇 연결 상태 상수
-const (
-	ConnectionStateOnline           = "ONLINE"
-	ConnectionStateOffline          = "OFFLINE"
-	ConnectionStateConnectionBroken = "CONNECTIONBROKEN"
-)
-
-// 명령 타입 상수 (OC는 별도 처리 로직에 사용되므로 유지)
-const (
-	CommandOrderCancel = "OC" // 명령 취소
-)
-
-// GetResponseCode 응답 코드 생성
+// GetResponseCode 응답 코드 생성 (공통 상수 사용)
 func (c *Command) GetResponseCode() string {
 	// 관계가 로드되었는지 확인
 	if c.CommandDefinition.CommandType == "" {
@@ -211,15 +189,15 @@ func (c *Command) GetResponseCode() string {
 
 	cmdType := c.CommandDefinition.CommandType
 	switch c.Status {
-	case StatusSuccess:
+	case constants.CommandStatusSuccess:
 		return cmdType + ":S"
-	case StatusFailure:
+	case constants.CommandStatusFailure:
 		return cmdType + ":F"
-	case StatusAbnormal:
+	case constants.CommandStatusAbnormal:
 		return cmdType + ":A"
-	case StatusNormal:
+	case constants.CommandStatusNormal:
 		return cmdType + ":N"
-	case StatusRejected:
+	case constants.CommandStatusRejected:
 		return cmdType + ":R"
 	default:
 		return cmdType + ":F"
@@ -228,15 +206,5 @@ func (c *Command) GetResponseCode() string {
 
 // IsValidConnectionState 유효한 연결 상태인지 확인
 func IsValidConnectionState(state string) bool {
-	validStates := []string{
-		ConnectionStateOnline,
-		ConnectionStateOffline,
-		ConnectionStateConnectionBroken,
-	}
-	for _, s := range validStates {
-		if state == s {
-			return true
-		}
-	}
-	return false
+	return constants.IsValidConnectionState(state)
 }

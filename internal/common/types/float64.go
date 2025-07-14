@@ -14,7 +14,8 @@ func (f Float64) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON JSON 언마샬링
 func (f *Float64) UnmarshalJSON(data []byte) error {
 	var val float64
-	if err := fmt.Sscanf(string(data), "%f", &val); err != nil {
+	_, err := fmt.Sscanf(string(data), "%f", &val)
+	if err != nil {
 		return err
 	}
 	*f = Float64(val)

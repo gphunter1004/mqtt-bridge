@@ -1,3 +1,4 @@
+// internal/repository/execution.go (파일명만 수정 + 최소한의 공통 상수 적용)
 package repository
 
 import (
@@ -8,7 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// UpdateCommandStatus 는 Command의 최종 상태를 업데이트합니다.
+// UpdateCommandStatus Command의 최종 상태를 업데이트합니다.
 func UpdateCommandStatus(db *gorm.DB, command *models.Command, status, errMsg string) {
 	command.Status = status
 	if errMsg != "" {
@@ -20,7 +21,7 @@ func UpdateCommandStatus(db *gorm.DB, command *models.Command, status, errMsg st
 	utils.Logger.Infof("Command %d status updated to %s", command.ID, status)
 }
 
-// UpdateCommandExecutionStatus 는 CommandExecution의 상태를 업데이트합니다.
+// UpdateCommandExecutionStatus CommandExecution의 상태를 업데이트합니다.
 func UpdateCommandExecutionStatus(db *gorm.DB, exec *models.CommandExecution, status string, completedAt *time.Time) {
 	exec.Status = status
 	if completedAt != nil {
@@ -30,7 +31,7 @@ func UpdateCommandExecutionStatus(db *gorm.DB, exec *models.CommandExecution, st
 	utils.Logger.Infof("CommandExecution %d status updated to %s", exec.ID, status)
 }
 
-// UpdateOrderExecutionStatus 는 OrderExecution의 상태를 업데이트합니다.
+// UpdateOrderExecutionStatus OrderExecution의 상태를 업데이트합니다.
 func UpdateOrderExecutionStatus(db *gorm.DB, exec *models.OrderExecution, status string, completedAt *time.Time) {
 	exec.Status = status
 	if completedAt != nil {
@@ -40,7 +41,7 @@ func UpdateOrderExecutionStatus(db *gorm.DB, exec *models.OrderExecution, status
 	utils.Logger.Infof("OrderExecution for order %s status updated to %s", exec.OrderID, status)
 }
 
-// UpdateStepExecutionStatus 는 StepExecution의 상태를 업데이트합니다.
+// UpdateStepExecutionStatus StepExecution의 상태를 업데이트합니다.
 func UpdateStepExecutionStatus(db *gorm.DB, exec *models.StepExecution, status, result, errMsg string, completedAt *time.Time) {
 	exec.Status = status
 	exec.Result = result

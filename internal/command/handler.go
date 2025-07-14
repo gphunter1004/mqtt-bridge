@@ -1,8 +1,9 @@
-// internal/command/handler.go
+// internal/command/handler.go (수정된 버전 - 공통 상수 사용)
 package command
 
 import (
 	"fmt"
+	"mqtt-bridge/internal/common/constants"
 	"mqtt-bridge/internal/config"
 	"mqtt-bridge/internal/models"
 	"mqtt-bridge/internal/utils"
@@ -73,7 +74,7 @@ func (h *Handler) HandleRobotStateUpdate(stateMsg *models.RobotStateMessage) {
 func (h *Handler) SendResponseToPLC(result CommandResult) {
 	response := fmt.Sprintf("%s:%s", result.Command, result.Status)
 
-	if result.Status == StatusFailure && result.Message != "" {
+	if result.Status == constants.StatusFailure && result.Message != "" {
 		utils.Logger.Errorf("Command %s failed: %s", result.Command, result.Message)
 	}
 
@@ -97,13 +98,13 @@ func (h *Handler) FailAllProcessingCommands(reason string) {
 
 	// 표준 명령들 실패 처리
 	var executions []models.CommandExecution
-	h.db.Where("status = ?", models.CommandExecutionStatusRunning).
+	h.db.Where("status = ?", constants.CommandExecutionStatusRunning).
 		Preload("Command.CommandDefinition").Find(&executions)
 
 	for _, execution := range executions {
 		result := CommandResult{
 			Command:   execution.Command.CommandDefinition.CommandType,
-			Status:    StatusFailure,
+			Status:    constants.StatusFailure,
 			Message:   reason,
 			Timestamp: time.Now(),
 		}
@@ -122,7 +123,7 @@ func (h *Handler) handleDirectActionCommand(commandStr string) {
 	if len(parts) < 2 {
 		h.SendResponseToPLC(CommandResult{
 			Command:   commandStr,
-			Status:    StatusFailure,
+			Status:    constants.StatusFailure,
 			Message:   "Invalid command format",
 			Timestamp: time.Now(),
 		})
@@ -133,7 +134,7 @@ func (h *Handler) handleDirectActionCommand(commandStr string) {
 	commandType := rune(parts[1][0])
 
 	var armParam string
-	if commandType == CommandTypeTrajectory && len(parts) >= 3 {
+	if commandType == constants.CommandTypeTrajectory && len(parts) >= 3 {
 		armParam = parts[2]
 	}
 
@@ -154,7 +155,7 @@ func (h *Handler) handleDirectActionCommand(commandStr string) {
 
 		// 직접 액션은 즉시 응답하지 않음 (state 기반 완료 대기)
 		// 에러가 발생한 경우에만 즉시 응답
-		if result != nil && result.Status == StatusFailure {
+		if result != nil && result.Status == constants.StatusFailure {
 			h.SendResponseToPLC(*result)
 		}
 	}()
@@ -167,7 +168,7 @@ func (h *Handler) handleStandardCommand(commandStr string) {
 	if err := h.db.Where("command_type = ? AND is_active = true", commandStr).First(&cmdDef).Error; err != nil {
 		h.SendResponseToPLC(CommandResult{
 			Command:   commandStr,
-			Status:    StatusFailure,
+			Status:    constants.StatusFailure,
 			Message:   fmt.Sprintf("Command '%s' not defined or inactive", commandStr),
 			Timestamp: time.Now(),
 		})
@@ -177,7 +178,7 @@ func (h *Handler) handleStandardCommand(commandStr string) {
 	// DB에 명령 기록
 	command := &models.Command{
 		CommandDefinitionID: cmdDef.ID,
-		Status:              models.StatusPending,
+		Status:              constants.CommandStatusPending,
 		RequestTime:         time.Now(),
 	}
 	h.db.Create(command)
@@ -191,7 +192,7 @@ func (h *Handler) handleStandardCommand(commandStr string) {
 		}
 
 		// 취소 명령은 즉시 응답, 나머지는 워크플로우 완료 후 응답
-		if result != nil && (cmdDef.CommandType == models.CommandOrderCancel || result.Status != StatusSuccess) {
+		if result != nil && (cmdDef.CommandType == constants.CommandOrderCancel || result.Status != constants.StatusSuccess) {
 			h.SendResponseToPLC(*result)
 		}
 	}()

@@ -1,11 +1,11 @@
-// internal/position/manager.go
+// internal/position/manager.go (수정된 버전 - 공통 기능 적용)
 package position
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"mqtt-bridge/internal/common/constants"
+	"mqtt-bridge/internal/common/idgen"
 	"mqtt-bridge/internal/config"
 	"mqtt-bridge/internal/models"
 	"mqtt-bridge/internal/utils"
@@ -49,7 +49,7 @@ func (m *Manager) CheckAndRequestInitPosition(stateMsg *models.RobotStateMessage
 		operatingMode = "UNKNOWN"
 	}
 
-	if operatingMode != models.OperatingModeAutomatic {
+	if operatingMode != constants.OperatingModeAutomatic {
 		utils.Logger.Debugf("Robot %s not in automatic mode (%s), skipping initPosition",
 			stateMsg.SerialNumber, operatingMode)
 		return
@@ -65,7 +65,7 @@ func (m *Manager) CheckAndRequestInitPosition(stateMsg *models.RobotStateMessage
 
 // RequestFactsheet 팩트시트 요청 전송
 func (m *Manager) RequestFactsheet(serialNumber, manufacturer string) error {
-	actionID := m.generateUniqueID()
+	actionID := idgen.UniqueID() // 공통 ID 생성기 사용
 
 	request := map[string]interface{}{
 		"headerId":     utils.GetNextHeaderID(),
@@ -75,9 +75,9 @@ func (m *Manager) RequestFactsheet(serialNumber, manufacturer string) error {
 		"serialNumber": serialNumber,
 		"actions": []map[string]interface{}{
 			{
-				"actionType":       "factsheetRequest",
+				"actionType":       constants.ActionTypeFactsheetRequest,
 				"actionId":         actionID,
-				"blockingType":     "NONE",
+				"blockingType":     constants.BlockingTypeNone,
 				"actionParameters": []map[string]interface{}{},
 			},
 		},
@@ -88,7 +88,7 @@ func (m *Manager) RequestFactsheet(serialNumber, manufacturer string) error {
 		return fmt.Errorf("failed to marshal factsheet request: %v", err)
 	}
 
-	topic := fmt.Sprintf("meili/v2/%s/%s/instantActions", manufacturer, serialNumber)
+	topic := constants.GetMeiliInstantActionsTopic(manufacturer, serialNumber)
 
 	utils.Logger.Infof("Sending factsheet request to %s", topic)
 
@@ -139,7 +139,7 @@ func (m *Manager) sendInitPositionRequest(stateMsg *models.RobotStateMessage) er
 		return fmt.Errorf("state message is nil")
 	}
 
-	actionID := m.generateUniqueID()
+	actionID := idgen.UniqueID()
 
 	// 안전한 필드 접근
 	safeString := func(val string) string {
@@ -186,9 +186,9 @@ func (m *Manager) sendInitPositionRequest(stateMsg *models.RobotStateMessage) er
 		"serialNumber": safeString(stateMsg.SerialNumber),
 		"actions": []map[string]interface{}{
 			{
-				"actionType":   "initPosition",
+				"actionType":   constants.ActionTypeInitPosition,
 				"actionId":     actionID,
-				"blockingType": "NONE",
+				"blockingType": constants.BlockingTypeNone,
 				"actionParameters": []map[string]interface{}{
 					{
 						"key":   "pose",
@@ -213,7 +213,7 @@ func (m *Manager) sendInitPositionRequest(stateMsg *models.RobotStateMessage) er
 		return fmt.Errorf("invalid manufacturer or serial number")
 	}
 
-	topic := fmt.Sprintf("meili/v2/%s/%s/instantActions", manufacturer, serialNumber)
+	topic := constants.GetMeiliInstantActionsTopic(manufacturer, serialNumber)
 
 	utils.Logger.Infof("Sending initPosition request to %s (ActionID: %s)", topic, actionID)
 	utils.Logger.Debugf("Request payload: %s", string(reqData))
@@ -225,13 +225,6 @@ func (m *Manager) sendInitPositionRequest(stateMsg *models.RobotStateMessage) er
 
 	utils.Logger.Infof("InitPosition request sent successfully to robot: %s", serialNumber)
 	return nil
-}
-
-// generateUniqueID 고유 ID 생성
-func (m *Manager) generateUniqueID() string {
-	randomBytes := make([]byte, 8)
-	rand.Read(randomBytes)
-	return fmt.Sprintf("%s_%d", hex.EncodeToString(randomBytes), time.Now().UnixNano())
 }
 
 // IsPositionInitialized 위치 초기화 여부 확인

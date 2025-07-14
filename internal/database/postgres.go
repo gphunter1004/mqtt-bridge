@@ -1,8 +1,9 @@
-// internal/database/postgres.go (최종 수정본)
+// internal/database/postgres.go
 package database
 
 import (
 	"fmt"
+	"mqtt-bridge/internal/common/constants"
 	"mqtt-bridge/internal/config"
 	"mqtt-bridge/internal/models"
 
@@ -83,7 +84,7 @@ func createSampleData(db *gorm.DB) error {
 		{CommandType: "CC", Description: "카메라 확인", IsActive: true},
 		{CommandType: "CL", Description: "카메라 세정", IsActive: true},
 		{CommandType: "KC", Description: "나이프 세정", IsActive: true},
-		{CommandType: "OC", Description: "명령 취소", IsActive: true},
+		{CommandType: constants.CommandOrderCancel, Description: "명령 취소", IsActive: true}, // 공통 상수 사용
 	}
 
 	var cataractDef models.CommandDefinition
@@ -100,11 +101,15 @@ func createSampleData(db *gorm.DB) error {
 	})
 
 	// 3. "백내장 적출"에 필요한 액션 템플릿 및 파라미터 생성
-	// 3-1. "수정체 유화술" 액션
+	// 3-1. "직장 파지" 액션
 	phacoAction, err := createOrUpdateAction(db,
-		models.ActionTemplate{ActionType: "Roboligent Robin - Follow Trajectory", ActionDescription: "직장 파지"},
+		models.ActionTemplate{
+			ActionType:        constants.ActionTypeTrajectory,
+			ActionDescription: "직장 파지",
+			BlockingType:      constants.BlockingTypeNone,
+		},
 		[]models.ActionParameter{
-			{Key: "arm", Value: "right", ValueType: "STRING"},
+			{Key: constants.ArmParamRight, Value: constants.ArmRight, ValueType: "STRING"},
 			{Key: "trajectory_name", Value: "trajectory_1", ValueType: "STRING"},
 		},
 	)
@@ -112,11 +117,15 @@ func createSampleData(db *gorm.DB) error {
 		return err
 	}
 
-	// 3-2. "인공수정체 삽입" 액션
+	// 3-2. "직장 근막 절개" 액션
 	iolAction, err := createOrUpdateAction(db,
-		models.ActionTemplate{ActionType: "Roboligent Robin - Follow Trajectory", ActionDescription: "직장 근막 절개"},
+		models.ActionTemplate{
+			ActionType:        constants.ActionTypeTrajectory,
+			ActionDescription: "직장 근막 절개",
+			BlockingType:      constants.BlockingTypeNone,
+		},
 		[]models.ActionParameter{
-			{Key: "arm", Value: "right", ValueType: "STRING"},
+			{Key: constants.ArmParamRight, Value: constants.ArmRight, ValueType: "STRING"},
 			{Key: "trajectory_name", Value: "trajectory_2", ValueType: "STRING"},
 		},
 	)
@@ -131,8 +140,18 @@ func createSampleData(db *gorm.DB) error {
 
 	// 5. 각 오더 템플릿에 대한 단계(Step) 생성
 	var phacoStep, iolStep models.OrderStep
-	db.FirstOrCreate(&phacoStep, models.OrderStep{TemplateID: phacoOrderTpl.ID, StepOrder: 1, WaitForCompletion: true})
-	db.FirstOrCreate(&iolStep, models.OrderStep{TemplateID: iolOrderTpl.ID, StepOrder: 1, WaitForCompletion: true})
+	db.FirstOrCreate(&phacoStep, models.OrderStep{
+		TemplateID:         phacoOrderTpl.ID,
+		StepOrder:          1,
+		WaitForCompletion:  true,
+		PreviousStepResult: constants.PreviousResultAny,
+	})
+	db.FirstOrCreate(&iolStep, models.OrderStep{
+		TemplateID:         iolOrderTpl.ID,
+		StepOrder:          1,
+		WaitForCompletion:  true,
+		PreviousStepResult: constants.PreviousResultAny,
+	})
 
 	// 6. 각 단계와 액션을 매핑
 	db.FirstOrCreate(&models.StepActionMapping{}, &models.StepActionMapping{

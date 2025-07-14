@@ -1,4 +1,4 @@
-// internal/command/types.go (공통 기능 적용)
+// internal/command/types.go (수정된 버전 - 공통 기능 적용)
 package command
 
 import (

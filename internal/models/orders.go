@@ -1,19 +1,12 @@
-// internal/models/orders.go (현재 버전)
+// internal/models/orders.go (수정된 버전 - 공통 기능 적용)
 package models
 
 import (
-	"fmt"
+	"mqtt-bridge/internal/common/types"
 	"time"
 
 	"gorm.io/gorm"
 )
-
-// Float64 커스텀 타입 - 항상 소수점이 포함되도록 JSON 마샬링
-type Float64 float64
-
-func (f Float64) MarshalJSON() ([]byte, error) {
-	return []byte(fmt.Sprintf("%.1f", float64(f))), nil
-}
 
 // CommandOrderMapping PLC 명령과 오더 템플릿의 매핑. 조건부 분기 로직 포함.
 type CommandOrderMapping struct {
@@ -212,7 +205,7 @@ type StepExecution struct {
 	Execution OrderExecution `gorm:"foreignKey:ExecutionID"`
 }
 
-// Order Message 구조체들 (MQTT 전송용) - Float64 타입 사용으로 수정
+// Order Message 구조체들 (MQTT 전송용) - 공통 Float64 타입 사용
 type OrderMessage struct {
 	HeaderID      int64       `json:"headerId"`
 	Timestamp     string      `json:"timestamp"`
@@ -234,14 +227,14 @@ type OrderNode struct {
 	Actions      []OrderAction `json:"actions"`
 }
 
-// NodePosition 구조체 - Float64 타입 사용으로 수정
+// NodePosition 구조체 - 공통 Float64 타입 사용
 type NodePosition struct {
-	X                     Float64 `json:"x"`
-	Y                     Float64 `json:"y"`
-	Theta                 Float64 `json:"theta"`
-	AllowedDeviationXY    Float64 `json:"allowedDeviationXY"`
-	AllowedDeviationTheta Float64 `json:"allowedDeviationTheta"`
-	MapID                 string  `json:"mapId"`
+	X                     types.Float64 `json:"x"`
+	Y                     types.Float64 `json:"y"`
+	Theta                 types.Float64 `json:"theta"`
+	AllowedDeviationXY    types.Float64 `json:"allowedDeviationXY"`
+	AllowedDeviationTheta types.Float64 `json:"allowedDeviationTheta"`
+	MapID                 string        `json:"mapId"`
 }
 
 type OrderAction struct {
@@ -257,48 +250,20 @@ type OrderActionParameter struct {
 	Value interface{} `json:"value"`
 }
 
-// OrderEdge 구조체 - Float64 타입 사용으로 수정
+// OrderEdge 구조체 - 공통 Float64 타입 사용
 type OrderEdge struct {
-	EdgeID          string  `json:"edgeId"`
-	SequenceID      int     `json:"sequenceId"`
-	StartNodeID     string  `json:"startNodeId"`
-	EndNodeID       string  `json:"endNodeId"`
-	MaxSpeed        Float64 `json:"maxSpeed,omitempty"`
-	MaxHeight       Float64 `json:"maxHeight,omitempty"`
-	MinHeight       Float64 `json:"minHeight,omitempty"`
-	Orientation     Float64 `json:"orientation,omitempty"`
-	Direction       string  `json:"direction,omitempty"`
-	RotationAllowed bool    `json:"rotationAllowed"`
-	Released        bool    `json:"released"`
+	EdgeID          string        `json:"edgeId"`
+	SequenceID      int           `json:"sequenceId"`
+	StartNodeID     string        `json:"startNodeId"`
+	EndNodeID       string        `json:"endNodeId"`
+	MaxSpeed        types.Float64 `json:"maxSpeed,omitempty"`
+	MaxHeight       types.Float64 `json:"maxHeight,omitempty"`
+	MinHeight       types.Float64 `json:"minHeight,omitempty"`
+	Orientation     types.Float64 `json:"orientation,omitempty"`
+	Direction       string        `json:"direction,omitempty"`
+	RotationAllowed bool          `json:"rotationAllowed"`
+	Released        bool          `json:"released"`
 }
 
-// 상태 상수들
-const (
-	CommandExecutionStatusPending   = "PENDING"
-	CommandExecutionStatusRunning   = "RUNNING"
-	CommandExecutionStatusCompleted = "COMPLETED"
-	CommandExecutionStatusFailed    = "FAILED"
-	CommandExecutionStatusCancelled = "CANCELLED"
-	OrderExecutionStatusPending     = "PENDING"
-	OrderExecutionStatusRunning     = "RUNNING"
-	OrderExecutionStatusWaiting     = "WAITING"
-	OrderExecutionStatusCompleted   = "COMPLETED"
-	OrderExecutionStatusFailed      = "FAILED"
-	StepExecutionStatusPending      = "PENDING"
-	StepExecutionStatusRunning      = "RUNNING"
-	StepExecutionStatusFinished     = "FINISHED"
-	StepExecutionStatusFailed       = "FAILED"
-	StepExecutionStatusSkipped      = "SKIPPED"
-	StepExecutionStatusTimeout      = "TIMEOUT"
-	PreviousResultAny               = "ALWAYS"
-	PreviousResultSuccess           = "SUCCESS"
-	PreviousResultFailure           = "FAILURE"
-	PreviousResultAbnormal          = "ABNORMAL"
-	PreviousResultNormal            = "NORMAL"
-	BlockingTypeNone                = "NONE"
-	BlockingTypeSoft                = "SOFT"
-	BlockingTypeHard                = "HARD"
-	DirectionStraight               = "STRAIGHT"
-	DirectionLeft                   = "LEFT"
-	DirectionRight                  = "RIGHT"
-)
+// 호환성을 위한 Float64 타입 별칭 (기존 코드와의 호환성)
+type Float64 = types.Float64
