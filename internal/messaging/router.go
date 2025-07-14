@@ -58,28 +58,27 @@ func (r *Router) RouteMessage(client mqtt.Client, msg mqtt.Message) {
 	// 토픽 패턴에 따라 라우팅
 	switch {
 	case topic == "bridge/command":
-		// PLC 명령
+		utils.Logger.Infof("🎯 ROUTING to Command Handler")
 		r.commandHandler.HandlePLCCommand(client, msg)
 
 	case strings.Contains(topic, "/connection"):
-		// 로봇 연결 상태
+		utils.Logger.Infof("🔗 ROUTING to Robot Connection Handler")
 		r.robotHandler.HandleConnectionState(client, msg)
 
 	case strings.Contains(topic, "/state"):
-		// 로봇 상태 (여러 핸들러에서 처리)
+		utils.Logger.Infof("📊 ROUTING to Robot State Handler")
 		r.handleRobotState(client, msg)
 
 	case strings.Contains(topic, "/factsheet"):
-		// 팩트시트 (robot handler에서만 처리)
+		utils.Logger.Infof("📋 ROUTING to Robot Factsheet Handler")
 		r.robotHandler.HandleFactsheet(client, msg)
 
 	case strings.Contains(topic, "/order"):
-		// Order 메시지 (전체 내용 로깅)
-		utils.Logger.Infof("📦 ORDER received from %s (%d bytes)", topic, len(msg.Payload()))
-		utils.Logger.Infof("📦 ORDER CONTENT: %s", string(msg.Payload()))
+		// Order 메시지는 이미 Subscriber에서 로그했으므로 간소화
+		utils.Logger.Infof("📦 ROUTING to Order Handler (log only)")
 
 	default:
-		utils.Logger.Warnf("Unhandled topic: %s", topic)
+		utils.Logger.Warnf("❓ UNHANDLED topic: %s", topic)
 	}
 }
 
