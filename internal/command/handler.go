@@ -64,6 +64,9 @@ func (h *Handler) HandlePLCCommand(client mqtt.Client, msg mqtt.Message) {
 func (h *Handler) HandleRobotStateUpdate(stateMsg *models.RobotStateMessage) {
 	result := h.processor.HandleDirectCommandStateUpdate(stateMsg)
 	if result != nil {
+		// 🔥 수정: 성공/실패 모든 경우에 PLC에 응답 전송
+		utils.Logger.Infof("📤 Sending direct command result to PLC: %s:%s",
+			result.Command, result.Status)
 		h.SendResponseToPLC(*result)
 	}
 }
@@ -138,10 +141,16 @@ func (h *Handler) handleDirectActionCommand(commandStr string) {
 			utils.Logger.Errorf("Error processing direct action: %v", err)
 		}
 
-		// 직접 액션은 즉시 응답하지 않음 (state 기반 완료 대기)
+		// 🔥 수정: 직접 액션은 즉시 응답하지 않음 (state 기반 완료 대기)
 		// 에러가 발생한 경우에만 즉시 응답
 		if result != nil && result.Status == constants.StatusFailure {
+			utils.Logger.Infof("📤 Sending direct action error to PLC: %s:%s",
+				result.Command, result.Status)
 			h.SendResponseToPLC(*result)
+		} else if result != nil && result.Status == constants.StatusSuccess {
+			// 성공적으로 전송된 경우 로그만 남기고 state 완료 대기
+			utils.Logger.Infof("✅ Direct action order sent successfully: %s (OrderID: %s) - Waiting for completion via state message",
+				result.Command, result.OrderID)
 		}
 	}()
 }

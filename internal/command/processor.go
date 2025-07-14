@@ -184,27 +184,43 @@ func (p *Processor) HandleDirectCommandStateUpdate(stateMsg *models.RobotStateMe
 	}
 
 	ctx := context.Background()
-	key := redis.PendingDirectCommand(stateMsg.OrderID) // 공통 키 생성기 사용
+	key := redis.PendingDirectCommand(stateMsg.OrderID)
+
+	// 🔍 디버그: Redis 키 확인
+	utils.Logger.Debugf("🔍 Checking Redis key for direct command: %s", key)
 
 	// Redis에서 대기 중인 명령 확인
 	commandData, err := p.redisClient.HGetAll(ctx, key).Result()
 	if err != nil || len(commandData) == 0 {
+		utils.Logger.Debugf("🔍 No pending direct command found for OrderID: %s", stateMsg.OrderID)
 		return nil // 대기 중인 직접 명령이 아님
 	}
 
 	fullCommand := commandData["full_command"]
 	if fullCommand == "" {
+		utils.Logger.Debugf("🔍 Empty full_command for OrderID: %s", stateMsg.OrderID)
 		return nil
+	}
+
+	utils.Logger.Infof("🔍 Found pending direct command: %s for OrderID: %s", fullCommand, stateMsg.OrderID)
+
+	// 🔍 디버그: ActionStates 로그
+	utils.Logger.Debugf("🔍 ActionStates count: %d", len(stateMsg.ActionStates))
+	for i, action := range stateMsg.ActionStates {
+		utils.Logger.Debugf("🔍 Action[%d]: ID=%s, Status=%s, Type=%s",
+			i, action.ActionID, action.ActionStatus, action.ActionType)
 	}
 
 	// 액션 상태 확인
 	result := p.determineDirectCommandResult(stateMsg.ActionStates)
 
+	utils.Logger.Infof("🔍 Direct command result determined: %s -> %s", fullCommand, result)
+
 	if result != "" {
 		// 결과가 확정되면 Redis에서 제거
 		p.redisClient.Del(ctx, key)
 
-		utils.Logger.Infof("Direct command completed: %s -> %s", fullCommand, result)
+		utils.Logger.Infof("✅ Direct command completed: %s -> %s", fullCommand, result)
 
 		return &CommandResult{
 			Command:   fullCommand,
@@ -215,6 +231,7 @@ func (p *Processor) HandleDirectCommandStateUpdate(stateMsg *models.RobotStateMe
 		}
 	}
 
+	utils.Logger.Debugf("🔍 Direct command still in progress: %s", fullCommand)
 	return nil // 아직 진행 중
 }
 
@@ -270,6 +287,7 @@ func (p *Processor) storePendingDirectCommand(fullCommand, orderID string) error
 // determineDirectCommandResult 액션 상태를 기반으로 명령 결과 결정
 func (p *Processor) determineDirectCommandResult(actionStates []models.ActionState) string {
 	if len(actionStates) == 0 {
+		utils.Logger.Debugf("🔍 No action states to evaluate")
 		return ""
 	}
 
@@ -277,23 +295,31 @@ func (p *Processor) determineDirectCommandResult(actionStates []models.ActionSta
 	hasFailure := false
 
 	for _, action := range actionStates {
+		utils.Logger.Debugf("🔍 Evaluating action: %s -> %s", action.ActionID, action.ActionStatus)
+
 		switch action.ActionStatus {
 		case constants.ActionStatusFailed:
+			utils.Logger.Infof("🔍 Action failed: %s", action.ActionID)
 			hasFailure = true
 		case constants.ActionStatusFinished:
+			utils.Logger.Debugf("🔍 Action finished: %s", action.ActionID)
 			continue
 		default:
+			utils.Logger.Debugf("🔍 Action still running: %s -> %s", action.ActionID, action.ActionStatus)
 			allFinished = false
 		}
 	}
 
 	if hasFailure {
+		utils.Logger.Infof("🔍 Result: FAILURE (some actions failed)")
 		return constants.StatusFailure
 	}
 
 	if allFinished {
+		utils.Logger.Infof("🔍 Result: SUCCESS (all actions finished)")
 		return constants.StatusSuccess
 	}
 
+	utils.Logger.Debugf("🔍 Result: IN_PROGRESS (actions still running)")
 	return "" // 아직 진행 중
 }
