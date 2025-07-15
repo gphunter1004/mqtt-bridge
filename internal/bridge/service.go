@@ -1,4 +1,4 @@
-// internal/bridge/service.go (수정된 버전 - Position 도메인 완전 제거)
+// internal/bridge/service.go
 package bridge
 
 import (
@@ -32,9 +32,9 @@ type Service struct {
 	workflowExecutor *workflow.Executor
 }
 
-// NewService 새 브릿지 서비스 생성 (Position 도메인 제거)
+// NewService 새 브릿지 서비스 생성
 func NewService(db *gorm.DB, redisClient *redisClient.Client, cfg *config.Config) (*Service, error) {
-	utils.Logger.Infof("🏗️ CREATING Bridge Service (without Position domain)")
+	utils.Logger.Infof("🏗️ CREATING Bridge Service")
 
 	// 1. MQTT 클라이언트 생성
 	mqttClient, err := messaging.NewMQTTClient(cfg)
@@ -52,21 +52,13 @@ func NewService(db *gorm.DB, redisClient *redisClient.Client, cfg *config.Config
 	robotStatusManager := robot.NewStatusManager(db)
 	robotFactsheetManager := robot.NewFactsheetManager(db)
 
-	// 4. Robot Handler 생성 (Position 기능 통합됨)
-	robotHandler := robot.NewHandler(
-		robotStatusManager,
-		robotFactsheetManager,
-		nil,                          // commandFailureHandler는 나중에 설정
-		mqttClient.GetNativeClient(), // MQTT 클라이언트
-	)
-
-	// 5. Workflow Domain 생성
+	// 4. Workflow Domain 생성
 	workflowExecutor := workflow.NewExecutor(
 		db, redisClient, mqttClient.GetNativeClient(), cfg,
 		plcSender,
 	)
 
-	// 6. Command Domain 생성
+	// 5. Command Domain 생성
 	commandProcessor := command.NewProcessor(
 		db, redisClient, cfg,
 		robotStatusManager,
@@ -77,8 +69,11 @@ func NewService(db *gorm.DB, redisClient *redisClient.Client, cfg *config.Config
 		db, cfg, commandProcessor, plcSender,
 	)
 
-	// 7. 순환 의존성 해결
-	robotHandler = robot.NewHandler(
+	// 6. 🔥 순환 참조 설정: Workflow Executor에 Command Handler 참조 설정
+	workflowExecutor.SetCommandHandler(commandHandler)
+
+	// 7. Robot Handler 생성
+	robotHandler := robot.NewHandler(
 		robotStatusManager,
 		robotFactsheetManager,
 		commandHandler,               // commandFailureHandler
@@ -108,7 +103,7 @@ func NewService(db *gorm.DB, redisClient *redisClient.Client, cfg *config.Config
 		workflowExecutor: workflowExecutor,
 	}
 
-	utils.Logger.Infof("✅ Bridge Service CREATED (Position domain eliminated)")
+	utils.Logger.Infof("✅ Bridge Service CREATED")
 	return service, nil
 }
 

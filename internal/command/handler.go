@@ -35,7 +35,7 @@ func (h *Handler) HandleRobotStateUpdate(stateMsg *models.RobotStateMessage) {
 			i, action.ActionID, action.ActionType, action.ActionStatus, action.ActionDescription)
 	}
 
-	// 직접 명령 완료 확인 및 처리
+	// 1. 직접 명령 완료 확인 및 처리
 	result := h.processor.HandleDirectCommandStateUpdate(stateMsg)
 	if result != nil {
 		utils.Logger.Infof("📤 COMMAND HANDLER: Direct command result found: %s:%s",
@@ -44,6 +44,67 @@ func (h *Handler) HandleRobotStateUpdate(stateMsg *models.RobotStateMessage) {
 	} else {
 		utils.Logger.Debugf("🔍 COMMAND HANDLER: No direct command result for OrderID: %s", stateMsg.OrderID)
 	}
+
+	// 2. 🔥 새로운 기능: RUNNING 상태 전송
+	h.handleRunningStateNotification(stateMsg)
+}
+
+// 🔥 새로운 메서드: RUNNING 상태 알림 처리
+func (h *Handler) handleRunningStateNotification(stateMsg *models.RobotStateMessage) {
+	if stateMsg.OrderID == "" {
+		return
+	}
+
+	// 현재 실행 중인 명령이 있는지 확인
+	var orderExecution models.OrderExecution
+	if err := h.db.Preload("CommandExecution.Command.CommandDefinition").
+		Where("order_id = ? AND status = ?", stateMsg.OrderID, constants.OrderExecutionStatusRunning).
+		First(&orderExecution).Error; err != nil {
+		// 실행 중인 오더가 없으면 무시
+		return
+	}
+
+	// 액션 상태 확인
+	hasRunningAction := false
+	for _, action := range stateMsg.ActionStates {
+		if action.ActionStatus == constants.ActionStatusRunning {
+			hasRunningAction = true
+			break
+		}
+	}
+
+	// RUNNING 액션이 있고, 아직 RUNNING 상태 알림을 보내지 않았다면 전송
+	if hasRunningAction {
+		commandType := orderExecution.CommandExecution.Command.CommandDefinition.CommandType
+
+		// 🔥 중복 전송 방지: 이미 RUNNING 상태를 보냈는지 확인
+		if !h.hasRunningStatusSent(orderExecution.ID) {
+			utils.Logger.Infof("📤 Sending RUNNING status to PLC: %s:%s", commandType, constants.StatusRunning)
+
+			if err := h.plcSender.SendResponse(commandType, constants.StatusRunning, "Command is now running"); err != nil {
+				utils.Logger.Errorf("❌ Failed to send RUNNING status to PLC: %v", err)
+			} else {
+				utils.Logger.Infof("✅ RUNNING status sent to PLC: %s:%s", commandType, constants.StatusRunning)
+				h.markRunningStatusSent(orderExecution.ID)
+			}
+		}
+	}
+}
+
+// 🔥 RUNNING 상태 전송 여부 확인 (간단한 메모리 기반 구현)
+var runningStatusSent = make(map[uint]bool)
+
+func (h *Handler) hasRunningStatusSent(orderExecutionID uint) bool {
+	return runningStatusSent[orderExecutionID]
+}
+
+func (h *Handler) markRunningStatusSent(orderExecutionID uint) {
+	runningStatusSent[orderExecutionID] = true
+}
+
+// 🔥 오더 완료 시 메모리 정리 (대문자로 변경 - 인터페이스 구현)
+func (h *Handler) ClearRunningStatusFlag(orderExecutionID uint) {
+	delete(runningStatusSent, orderExecutionID)
 }
 
 // HandlePLCCommand PLC 명령 수신 처리 (로깅 강화)
@@ -229,6 +290,11 @@ func (h *Handler) FailAllProcessingCommands(reason string) {
 		if err := h.plcSender.SendFailure(execution.Command.CommandDefinition.CommandType, reason); err != nil {
 			utils.Logger.Errorf("❌ Failed to send failure response for command %s: %v",
 				execution.Command.CommandDefinition.CommandType, err)
+		}
+
+		// 🔥 실패 처리 시 RUNNING 상태 플래그 정리
+		for _, orderExec := range execution.OrderExecutions {
+			h.ClearRunningStatusFlag(orderExec.ID)
 		}
 	}
 

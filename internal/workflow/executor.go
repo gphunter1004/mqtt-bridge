@@ -1,4 +1,4 @@
-// internal/workflow/executor.go (완전한 버전 - 다음 오더 진행 문제 해결)
+// internal/workflow/executor.go (RUNNING 상태 메모리 정리 추가)
 package workflow
 
 import (
@@ -18,15 +18,21 @@ import (
 	"gorm.io/gorm"
 )
 
+// CommandHandler 인터페이스 정의 (순환 참조 방지)
+type CommandHandler interface {
+	ClearRunningStatusFlag(orderExecutionID uint)
+}
+
 // Executor 워크플로우 실행 엔진
 type Executor struct {
-	db           *gorm.DB
-	redisClient  *redis.Client
-	mqttClient   mqtt.Client
-	config       *config.Config
-	orderBuilder *OrderBuilder
-	stepManager  *StepManager
-	plcSender    *messaging.PLCResponseSender
+	db             *gorm.DB
+	redisClient    *redis.Client
+	mqttClient     mqtt.Client
+	config         *config.Config
+	orderBuilder   *OrderBuilder
+	stepManager    *StepManager
+	plcSender      *messaging.PLCResponseSender
+	commandHandler CommandHandler
 }
 
 // NewExecutor 새 워크플로우 실행기 생성
@@ -41,23 +47,30 @@ func NewExecutor(db *gorm.DB, redisClient *redis.Client, mqttClient mqtt.Client,
 		config:     cfg,
 	}
 
-	// 🔥 수정: 먼저 Executor 생성
+	// 🔥 먼저 Executor 생성
 	executor := &Executor{
-		db:           db,
-		redisClient:  redisClient,
-		mqttClient:   mqttClient,
-		config:       cfg,
-		orderBuilder: orderBuilder,
-		plcSender:    plcSender,
+		db:             db,
+		redisClient:    redisClient,
+		mqttClient:     mqttClient,
+		config:         cfg,
+		orderBuilder:   orderBuilder,
+		plcSender:      plcSender,
+		commandHandler: nil,
 	}
 
-	// 🔥 수정: StepManager 생성 후 Executor 참조 설정
+	// StepManager 생성 후 Executor 참조 설정
 	stepManager := NewStepManager(db, redisClient, orderBuilder, messageSender)
-	stepManager.SetExecutor(executor) // 순환 의존성 해결
+	stepManager.SetExecutor(executor)
 	executor.stepManager = stepManager
 
 	utils.Logger.Infof("✅ Workflow Executor CREATED")
 	return executor
+}
+
+// Command Handler 참조 설정
+func (e *Executor) SetCommandHandler(handler CommandHandler) {
+	e.commandHandler = handler
+	utils.Logger.Infof("✅ Workflow Executor: Command Handler reference set")
 }
 
 // ExecuteCommandOrder PLC 명령에 대한 워크플로우 실행 시작
@@ -106,17 +119,22 @@ func (e *Executor) HandleOrderStateUpdate(stateMsg *models.RobotStateMessage) {
 	// 단계 완료 확인 및 처리
 	if e.stepManager.HandleStepCompletion(stateMsg) {
 		utils.Logger.Infof("✅ Step completion handled for OrderID: %s", stateMsg.OrderID)
-		// StepManager에서 이미 다음 단계 또는 완료 처리됨
 		return
 	}
 
 	utils.Logger.Debugf("🔍 No step completion detected for OrderID: %s", stateMsg.OrderID)
 }
 
-// 🔥 새로운 메서드: 오더 완료 콜백 (StepManager에서 호출)
+// OnOrderCompleted 오더 완료 콜백 (StepManager에서 호출)
 func (e *Executor) OnOrderCompleted(orderExecution *models.OrderExecution, success bool) {
 	utils.Logger.Infof("📢 OnOrderCompleted called: OrderID=%s, Success=%t",
 		orderExecution.OrderID, success)
+
+	// 🔥 RUNNING 상태 플래그 정리
+	if e.commandHandler != nil {
+		e.commandHandler.ClearRunningStatusFlag(orderExecution.ID)
+		utils.Logger.Debugf("🧹 Cleared RUNNING status flag for OrderExecution ID: %d", orderExecution.ID)
+	}
 
 	// CommandExecution 조회
 	var cmdExec models.CommandExecution
@@ -176,6 +194,11 @@ func (e *Executor) CancelAllRunningOrders() error {
 		for _, orderExec := range orderExecutions {
 			nowOrderExec := time.Now()
 			repository.UpdateOrderExecutionStatus(e.db, &orderExec, constants.OrderExecutionStatusFailed, &nowOrderExec)
+
+			// 🔥 RUNNING 상태 플래그 정리
+			if e.commandHandler != nil {
+				e.commandHandler.ClearRunningStatusFlag(orderExec.ID)
+			}
 
 			// 실행 중인 단계들 취소
 			e.stepManager.CancelRunningSteps(orderExec.ID, "Cancelled by order cancel command")
@@ -277,6 +300,17 @@ func (e *Executor) executeNextOrder(commandExecution *models.CommandExecution) e
 func (e *Executor) completeCommandExecution(commandExecution *models.CommandExecution) error {
 	utils.Logger.Infof("🏁 Completing command execution: ID=%d", commandExecution.ID)
 
+	// 🔥 모든 관련 OrderExecution의 RUNNING 상태 플래그 정리
+	if e.commandHandler != nil {
+		var orderExecutions []models.OrderExecution
+		e.db.Where("command_execution_id = ?", commandExecution.ID).Find(&orderExecutions)
+
+		for _, orderExec := range orderExecutions {
+			e.commandHandler.ClearRunningStatusFlag(orderExec.ID)
+			utils.Logger.Debugf("🧹 Cleared RUNNING status flag for OrderExecution ID: %d", orderExec.ID)
+		}
+	}
+
 	var failedOrderCount int64
 	e.db.Model(&models.OrderExecution{}).Where("command_execution_id = ? AND status = ?",
 		commandExecution.ID, constants.OrderExecutionStatusFailed).Count(&failedOrderCount)
@@ -315,6 +349,12 @@ func (e *Executor) sendResponseToPLC(command, status, errMsg string) {
 		finalStatus = constants.StatusSuccess
 	case constants.CommandStatusFailure:
 		finalStatus = constants.StatusFailure
+	case constants.CommandStatusRunning:
+		finalStatus = constants.StatusRunning
+	case constants.CommandStatusAbnormal:
+		finalStatus = constants.StatusAbnormal
+	case constants.CommandStatusNormal:
+		finalStatus = constants.StatusNormal
 	default:
 		finalStatus = status
 	}

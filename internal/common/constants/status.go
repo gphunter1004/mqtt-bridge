@@ -1,22 +1,25 @@
-// internal/common/constants/status.go
+// internal/common/constants/status.go (개선된 버전)
 package constants
 
 // Response Status 응답 상태 상수
 const (
 	StatusSuccess  = "S"
 	StatusFailure  = "F"
-	StatusRejected = "R"
+	StatusRejected = "X" // R 대신 X 사용 (더 명확한 거부 의미)
+	StatusRunning  = "R" // 새로 추가: Running (진행 중)
+	StatusAbnormal = "A" // 비정상 상태
+	StatusNormal   = "N" // 정상 상태
 )
 
 // Command Status DB 저장용 상태 상수
 const (
-	CommandStatusPending    = "PENDING"
-	CommandStatusProcessing = "PROCESSING"
-	CommandStatusSuccess    = "SUCCESS"
-	CommandStatusFailure    = "FAILURE"
-	CommandStatusAbnormal   = "ABNORMAL"
-	CommandStatusNormal     = "NORMAL"
-	CommandStatusRejected   = "REJECTED"
+	CommandStatusPending  = "PENDING"
+	CommandStatusRunning  = "RUNNING"
+	CommandStatusSuccess  = "SUCCESS"
+	CommandStatusFailure  = "FAILURE"
+	CommandStatusAbnormal = "ABNORMAL"
+	CommandStatusNormal   = "NORMAL"
+	CommandStatusRejected = "REJECTED"
 )
 
 // Execution Status 실행 상태 상수

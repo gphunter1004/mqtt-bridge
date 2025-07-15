@@ -2,7 +2,6 @@
 package models
 
 import (
-	"mqtt-bridge/internal/common/constants"
 	"time"
 
 	"gorm.io/gorm"
@@ -178,28 +177,4 @@ type RobotFactsheet struct {
 	CreatedAt         time.Time      `json:"created_at"`
 	UpdatedAt         time.Time      `json:"updated_at"`
 	DeletedAt         gorm.DeletedAt `gorm:"index" json:"deleted_at"`
-}
-
-// GetResponseCode 응답 코드 생성 (공통 상수 사용)
-func (c *Command) GetResponseCode() string {
-	// 관계가 로드되었는지 확인
-	if c.CommandDefinition.CommandType == "" {
-		return "UNKNOWN:F" // 혹은 기본 오류 코드
-	}
-
-	cmdType := c.CommandDefinition.CommandType
-	switch c.Status {
-	case constants.CommandStatusSuccess:
-		return cmdType + ":S"
-	case constants.CommandStatusFailure:
-		return cmdType + ":F"
-	case constants.CommandStatusAbnormal:
-		return cmdType + ":A"
-	case constants.CommandStatusNormal:
-		return cmdType + ":N"
-	case constants.CommandStatusRejected:
-		return cmdType + ":R"
-	default:
-		return cmdType + ":F"
-	}
 }

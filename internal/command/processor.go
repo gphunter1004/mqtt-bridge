@@ -155,7 +155,7 @@ func (p *Processor) ProcessStandardCommand(command *models.Command) (*CommandRes
 	}
 
 	// 처리 상태로 업데이트
-	repository.UpdateCommandStatus(p.db, command, constants.CommandStatusProcessing, "")
+	repository.UpdateCommandStatus(p.db, command, constants.CommandStatusRunning, "")
 
 	// 워크플로우 실행
 	if err := p.workflowExecutor.ExecuteCommandOrder(command); err != nil {
