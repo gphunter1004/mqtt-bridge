@@ -32,13 +32,10 @@ func (h *Handler) HandleRobotStateUpdate(stateMsg *models.RobotStateMessage) {
 	utils.Logger.Debugf("🔍 State message: OrderID=%s, ActionStates=%d",
 		stateMsg.OrderID, len(stateMsg.ActionStates))
 
-	// 액션 상태 상세 로깅
-	for i, action := range stateMsg.ActionStates {
-		utils.Logger.Debugf("🔍 Action[%d]: ID=%s, Type=%s, Status=%s, Description=%s",
-			i, action.ActionID, action.ActionType, action.ActionStatus, action.ActionDescription)
-	}
+	// 1. 🔥 요청 인지(:K) 상태 알림 처리 (가장 먼저 실행)
+	h.handleAcknowledgedStateNotification(stateMsg)
 
-	// 1. 직접 명령 완료 확인 및 처리
+	// 2. 직접 명령 완료 확인 및 처리
 	result := h.processor.HandleDirectCommandStateUpdate(stateMsg)
 	if result != nil {
 		utils.Logger.Infof("📤 COMMAND HANDLER: Direct command result found: %s:%s",
@@ -48,8 +45,56 @@ func (h *Handler) HandleRobotStateUpdate(stateMsg *models.RobotStateMessage) {
 		utils.Logger.Debugf("🔍 COMMAND HANDLER: No direct command result for OrderID: %s", stateMsg.OrderID)
 	}
 
-	// 2. 🔥 RUNNING 상태 전송 (표준 명령 + 직접 액션 모두 지원)
+	// 2. 🔥 RUNNING 상태 전송
 	h.handleRunningStateNotification(stateMsg)
+}
+
+// 🔥 요청 인지(:K) 상태 알림 처리 (새로운 함수)
+func (h *Handler) handleAcknowledgedStateNotification(stateMsg *models.RobotStateMessage) {
+	if stateMsg.OrderID == "" {
+		return
+	}
+
+	ctx := context.Background()
+	// 이미 :K 응답을 보냈는지 확인하기 위한 Redis 키
+	ackKey := fmt.Sprintf("ack_sent:%s", stateMsg.OrderID)
+
+	// Redis에 이미 키가 존재하면(이미 응답을 보냈으면) 함수 종료
+	if h.processor.GetRedisClient().Exists(ctx, ackKey).Val() > 0 {
+		return
+	}
+
+	var commandToSend string
+
+	// 표준 명령인지 확인
+	var orderExecution models.OrderExecution
+	err := h.db.Preload("CommandExecution.Command.CommandDefinition").
+		Where("order_id = ?", stateMsg.OrderID).First(&orderExecution).Error
+	if err == nil && orderExecution.ID > 0 {
+		// 표준 명령인 경우 CommandType 사용
+		commandToSend = orderExecution.CommandExecution.Command.CommandDefinition.CommandType
+	} else {
+		// 직접 액션 명령인지 확인
+		key := redis.PendingDirectCommand(stateMsg.OrderID)
+		commandData, err := h.processor.GetRedisClient().HGetAll(ctx, key).Result()
+		if err == nil && len(commandData) > 0 {
+			commandToSend = commandData["full_command"]
+		}
+	}
+
+	// 보낼 커맨드를 찾았을 경우
+	if commandToSend != "" {
+		utils.Logger.Infof("✅ Order Acknowledged by Robot: %s (OrderID: %s)", commandToSend, stateMsg.OrderID)
+
+		// PLC에 :K 응답 전송
+		if err := h.plcSender.SendResponse(commandToSend, constants.StatusAcknowledged, "Order acknowledged by robot"); err != nil {
+			utils.Logger.Errorf("❌ Failed to send ACKNOWLEDGED status to PLC: %v", err)
+		} else {
+			utils.Logger.Infof("✅ ACKNOWLEDGED status sent to PLC: %s:%s", commandToSend, constants.StatusAcknowledged)
+			// Redis에 :K 응답을 보냈음을 기록 (TTL: 2시간)
+			h.processor.GetRedisClient().Set(ctx, ackKey, "sent", 24*time.Hour)
+		}
+	}
 }
 
 // 🔥 RUNNING 상태 알림 처리 (디버그 강화)
