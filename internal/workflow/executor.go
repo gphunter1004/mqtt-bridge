@@ -1,4 +1,4 @@
-// internal/workflow/executor.go
+// internal/workflow/executor.go (완전한 버전 - 다음 오더 진행 문제 해결)
 package workflow
 
 import (
@@ -26,7 +26,7 @@ type Executor struct {
 	config       *config.Config
 	orderBuilder *OrderBuilder
 	stepManager  *StepManager
-	plcSender    *messaging.PLCResponseSender // 통합된 PLC 응답 전송기
+	plcSender    *messaging.PLCResponseSender
 }
 
 // NewExecutor 새 워크플로우 실행기 생성
@@ -40,17 +40,21 @@ func NewExecutor(db *gorm.DB, redisClient *redis.Client, mqttClient mqtt.Client,
 		mqttClient: mqttClient,
 		config:     cfg,
 	}
-	stepManager := NewStepManager(db, redisClient, orderBuilder, messageSender)
 
+	// 🔥 수정: 먼저 Executor 생성
 	executor := &Executor{
 		db:           db,
 		redisClient:  redisClient,
 		mqttClient:   mqttClient,
 		config:       cfg,
 		orderBuilder: orderBuilder,
-		stepManager:  stepManager,
-		plcSender:    plcSender, // 통합된 PLC 전송기 주입
+		plcSender:    plcSender,
 	}
+
+	// 🔥 수정: StepManager 생성 후 Executor 참조 설정
+	stepManager := NewStepManager(db, redisClient, orderBuilder, messageSender)
+	stepManager.SetExecutor(executor) // 순환 의존성 해결
+	executor.stepManager = stepManager
 
 	utils.Logger.Infof("✅ Workflow Executor CREATED")
 	return executor
@@ -61,7 +65,9 @@ func (e *Executor) ExecuteCommandOrder(command *models.Command) error {
 	if command.CommandDefinition.CommandType == "" {
 		e.db.Preload("CommandDefinition").First(&command, command.ID)
 	}
-	utils.Logger.Infof("Starting workflow for command: %s (ID: %d)", command.CommandDefinition.CommandType, command.ID)
+
+	utils.Logger.Infof("🚀 Starting workflow for command: %s (ID: %d)",
+		command.CommandDefinition.CommandType, command.ID)
 
 	commandExecution := &models.CommandExecution{
 		CommandID:         command.ID,
@@ -72,6 +78,9 @@ func (e *Executor) ExecuteCommandOrder(command *models.Command) error {
 	if err := e.db.Create(commandExecution).Error; err != nil {
 		return fmt.Errorf("failed to create command execution: %v", err)
 	}
+
+	utils.Logger.Infof("📝 Command execution created: ID=%d, CurrentOrderIndex=%d",
+		commandExecution.ID, commandExecution.CurrentOrderIndex)
 
 	return e.executeNextOrder(commandExecution)
 }
@@ -92,10 +101,61 @@ func (e *Executor) SendDirectActionOrder(baseCommand string, commandType rune, a
 
 // HandleOrderStateUpdate 로봇 상태 업데이트 처리
 func (e *Executor) HandleOrderStateUpdate(stateMsg *models.RobotStateMessage) {
+	utils.Logger.Debugf("🔍 HandleOrderStateUpdate called for OrderID: %s", stateMsg.OrderID)
+
 	// 단계 완료 확인 및 처리
 	if e.stepManager.HandleStepCompletion(stateMsg) {
-		// 단계가 완료되었으면 추가 처리 없음 (StepManager에서 이미 처리됨)
+		utils.Logger.Infof("✅ Step completion handled for OrderID: %s", stateMsg.OrderID)
+		// StepManager에서 이미 다음 단계 또는 완료 처리됨
 		return
+	}
+
+	utils.Logger.Debugf("🔍 No step completion detected for OrderID: %s", stateMsg.OrderID)
+}
+
+// 🔥 새로운 메서드: 오더 완료 콜백 (StepManager에서 호출)
+func (e *Executor) OnOrderCompleted(orderExecution *models.OrderExecution, success bool) {
+	utils.Logger.Infof("📢 OnOrderCompleted called: OrderID=%s, Success=%t",
+		orderExecution.OrderID, success)
+
+	// CommandExecution 조회
+	var cmdExec models.CommandExecution
+	if err := e.db.Preload("Command.CommandDefinition").First(&cmdExec, orderExecution.CommandExecutionID).Error; err != nil {
+		utils.Logger.Errorf("❌ Failed to load command execution: %v", err)
+		return
+	}
+
+	// 현재 매핑 조회
+	var currentMapping models.CommandOrderMapping
+	if err := e.db.Where("command_definition_id = ? AND execution_order = ?",
+		cmdExec.Command.CommandDefinitionID, orderExecution.ExecutionOrder).First(&currentMapping).Error; err != nil {
+		utils.Logger.Errorf("❌ Failed to load command mapping: %v", err)
+		return
+	}
+
+	// 다음 오더 인덱스 결정
+	var nextOrderIndex int
+	if success {
+		nextOrderIndex = currentMapping.NextExecutionOrder
+		utils.Logger.Infof("📈 Order succeeded, next order index: %d", nextOrderIndex)
+	} else {
+		nextOrderIndex = currentMapping.FailureOrder
+		utils.Logger.Infof("📉 Order failed, failure order index: %d", nextOrderIndex)
+	}
+
+	// CommandExecution 업데이트
+	cmdExec.CurrentOrderIndex = nextOrderIndex
+	if err := e.db.Save(&cmdExec).Error; err != nil {
+		utils.Logger.Errorf("❌ Failed to update command execution: %v", err)
+		return
+	}
+
+	utils.Logger.Infof("🔄 CommandExecution updated: ID=%d, CurrentOrderIndex=%d",
+		cmdExec.ID, cmdExec.CurrentOrderIndex)
+
+	// 다음 오더 실행
+	if err := e.executeNextOrder(&cmdExec); err != nil {
+		utils.Logger.Errorf("❌ Failed to execute next order: %v", err)
 	}
 }
 
@@ -156,8 +216,12 @@ func (e *Executor) SendCancelOrder() error {
 func (e *Executor) executeNextOrder(commandExecution *models.CommandExecution) error {
 	e.db.Preload("Command.CommandDefinition").First(&commandExecution, commandExecution.ID)
 
+	utils.Logger.Infof("🔍 executeNextOrder: CommandID=%d, CurrentOrderIndex=%d",
+		commandExecution.CommandID, commandExecution.CurrentOrderIndex)
+
 	if commandExecution.CurrentOrderIndex == 0 {
 		// 워크플로우 완료
+		utils.Logger.Infof("🏁 Workflow completed (CurrentOrderIndex=0)")
 		return e.completeCommandExecution(commandExecution)
 	}
 
@@ -175,7 +239,7 @@ func (e *Executor) executeNextOrder(commandExecution *models.CommandExecution) e
 
 	if err != nil {
 		errMsg := fmt.Sprintf("no order mapping found for index %d: %v", commandExecution.CurrentOrderIndex, err)
-		utils.Logger.Errorf("Workflow for CommandExecutionID %d will be terminated. Reason: %s", commandExecution.ID, errMsg)
+		utils.Logger.Errorf("❌ %s", errMsg)
 
 		now := time.Now()
 		repository.UpdateCommandExecutionStatus(e.db, commandExecution, constants.CommandExecutionStatusFailed, &now)
@@ -184,11 +248,14 @@ func (e *Executor) executeNextOrder(commandExecution *models.CommandExecution) e
 		return fmt.Errorf(errMsg)
 	}
 
+	utils.Logger.Infof("📋 Found order mapping: TemplateID=%d, ExecutionOrder=%d, NextOrder=%d",
+		mapping.TemplateID, mapping.ExecutionOrder, mapping.NextExecutionOrder)
+
 	// 새 오더 실행 생성
 	orderExecution := &models.OrderExecution{
 		CommandExecutionID: commandExecution.ID,
 		TemplateID:         mapping.TemplateID,
-		OrderID:            idgen.OrderID(), // 직접 ID 생성기 호출
+		OrderID:            idgen.OrderID(),
 		ExecutionOrder:     mapping.ExecutionOrder,
 		CurrentStep:        1,
 		Status:             constants.OrderExecutionStatusRunning,
@@ -198,7 +265,8 @@ func (e *Executor) executeNextOrder(commandExecution *models.CommandExecution) e
 		return fmt.Errorf("failed to create order execution: %v", err)
 	}
 
-	utils.Logger.Infof("Starting order execution: %s (Index: %d)", orderExecution.OrderID, orderExecution.ExecutionOrder)
+	utils.Logger.Infof("✅ Order execution created: OrderID=%s, ExecutionOrder=%d",
+		orderExecution.OrderID, orderExecution.ExecutionOrder)
 
 	// 첫 번째 단계 실행
 	e.stepManager.ExecuteNextStep(orderExecution, &mapping.Template)
@@ -207,6 +275,8 @@ func (e *Executor) executeNextOrder(commandExecution *models.CommandExecution) e
 
 // completeCommandExecution 명령 실행 완료 처리
 func (e *Executor) completeCommandExecution(commandExecution *models.CommandExecution) error {
+	utils.Logger.Infof("🏁 Completing command execution: ID=%d", commandExecution.ID)
+
 	var failedOrderCount int64
 	e.db.Model(&models.OrderExecution{}).Where("command_execution_id = ? AND status = ?",
 		commandExecution.ID, constants.OrderExecutionStatusFailed).Count(&failedOrderCount)
@@ -223,32 +293,21 @@ func (e *Executor) completeCommandExecution(commandExecution *models.CommandExec
 	repository.UpdateCommandStatus(e.db, &commandExecution.Command, finalCommandStatus, "")
 	e.sendResponseToPLC(commandExecution.Command.CommandDefinition.CommandType, finalCommandStatus, "")
 
-	utils.Logger.Infof("Workflow completed for command execution ID: %d with status: %s", commandExecution.ID, finalStatus)
+	utils.Logger.Infof("🎉 Workflow completed: CommandExecutionID=%d, Status=%s",
+		commandExecution.ID, finalStatus)
 	return nil
 }
 
-// TriggerNextOrder 다음 오더 트리거 (성공/실패에 따라)
+// TriggerNextOrder 다음 오더 트리거 (성공/실패에 따라) - 레거시 메서드
 func (e *Executor) TriggerNextOrder(completedOrder *models.OrderExecution, success bool) {
-	var cmdExec models.CommandExecution
-	e.db.Preload("Command.CommandDefinition").First(&cmdExec, completedOrder.CommandExecutionID)
+	utils.Logger.Infof("🔄 TriggerNextOrder (legacy method): OrderID=%s, Success=%t",
+		completedOrder.OrderID, success)
 
-	var currentMapping models.CommandOrderMapping
-	e.db.Where("command_definition_id = ? AND execution_order = ?",
-		cmdExec.Command.CommandDefinitionID, completedOrder.ExecutionOrder).First(&currentMapping)
-
-	var nextOrderIndex int
-	if success {
-		nextOrderIndex = currentMapping.NextExecutionOrder
-	} else {
-		nextOrderIndex = currentMapping.FailureOrder
-	}
-
-	cmdExec.CurrentOrderIndex = nextOrderIndex
-	e.db.Save(&cmdExec)
-	e.executeNextOrder(&cmdExec)
+	// 새로운 OnOrderCompleted 메서드로 리다이렉트
+	e.OnOrderCompleted(completedOrder, success)
 }
 
-// sendResponseToPLC PLC에 응답 전송 (통합된 로직 사용)
+// sendResponseToPLC PLC에 응답 전송
 func (e *Executor) sendResponseToPLC(command, status, errMsg string) {
 	var finalStatus string
 	switch status {
@@ -260,9 +319,10 @@ func (e *Executor) sendResponseToPLC(command, status, errMsg string) {
 		finalStatus = status
 	}
 
-	// 통합된 PLC 전송기 사용
+	utils.Logger.Infof("📤 Sending PLC response: %s:%s", command, finalStatus)
+
 	if err := e.plcSender.SendResponse(command, finalStatus, errMsg); err != nil {
-		utils.Logger.Errorf("Failed to send PLC response via workflow: %v", err)
+		utils.Logger.Errorf("❌ Failed to send PLC response: %v", err)
 	}
 }
 
@@ -287,7 +347,10 @@ func (e *Executor) sendOrder(orderPayload interface{}) error {
 	return nil
 }
 
+// =============================================================================
 // MQTTMessageSender MQTT 메시지 전송기 (MessageSender 인터페이스 구현)
+// =============================================================================
+
 type MQTTMessageSender struct {
 	mqttClient mqtt.Client
 	config     *config.Config
