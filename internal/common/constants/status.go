@@ -154,41 +154,6 @@ func IsValidConnectionState(state string) bool {
 	return false
 }
 
-// IsValidOperatingMode 유효한 운영 모드인지 확인
-func IsValidOperatingMode(mode string) bool {
-	validModes := []string{
-		OperatingModeAutomatic,
-		OperatingModeManual,
-		OperatingModeSemiautomatic,
-		OperatingModeService,
-		OperatingModeTeach,
-	}
-	for _, validMode := range validModes {
-		if mode == validMode {
-			return true
-		}
-	}
-	return false
-}
-
-// IsValidActionStatus 유효한 액션 상태인지 확인
-func IsValidActionStatus(status string) bool {
-	validStatuses := []string{
-		ActionStatusWaiting,
-		ActionStatusInitializing,
-		ActionStatusRunning,
-		ActionStatusPaused,
-		ActionStatusFinished,
-		ActionStatusFailed,
-	}
-	for _, validStatus := range validStatuses {
-		if status == validStatus {
-			return true
-		}
-	}
-	return false
-}
-
 // ParseArmParam 팔 파라미터를 파싱
 func ParseArmParam(armParam string) string {
 	switch armParam {

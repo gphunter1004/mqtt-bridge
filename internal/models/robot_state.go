@@ -142,16 +142,6 @@ type PoseValue struct {
 	Y          float64 `json:"y"`
 }
 
-// IsValidOperatingMode 유효한 운영 모드인지 확인 (공통 함수 사용)
-func IsValidOperatingMode(mode string) bool {
-	return constants.IsValidOperatingMode(mode)
-}
-
-// IsValidActionStatus 유효한 액션 상태인지 확인 (공통 함수 사용)
-func IsValidActionStatus(status string) bool {
-	return constants.IsValidActionStatus(status)
-}
-
 // IsValidEStopStatus 유효한 E-Stop 상태인지 확인
 func IsValidEStopStatus(status string) bool {
 	validStatuses := []string{
