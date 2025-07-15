@@ -18,9 +18,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// CommandHandler 인터페이스 정의 (순환 참조 방지)
+// CommandHandler 인터페이스 정의
 type CommandHandler interface {
-	ClearRunningStatusFlag(orderExecutionID uint)
 }
 
 // Executor 워크플로우 실행 엔진
@@ -130,12 +129,6 @@ func (e *Executor) OnOrderCompleted(orderExecution *models.OrderExecution, succe
 	utils.Logger.Infof("📢 OnOrderCompleted called: OrderID=%s, Success=%t",
 		orderExecution.OrderID, success)
 
-	// 🔥 RUNNING 상태 플래그 정리
-	if e.commandHandler != nil {
-		e.commandHandler.ClearRunningStatusFlag(orderExecution.ID)
-		utils.Logger.Debugf("🧹 Cleared RUNNING status flag for OrderExecution ID: %d", orderExecution.ID)
-	}
-
 	// CommandExecution 조회
 	var cmdExec models.CommandExecution
 	if err := e.db.Preload("Command.CommandDefinition").First(&cmdExec, orderExecution.CommandExecutionID).Error; err != nil {
@@ -194,11 +187,6 @@ func (e *Executor) CancelAllRunningOrders() error {
 		for _, orderExec := range orderExecutions {
 			nowOrderExec := time.Now()
 			repository.UpdateOrderExecutionStatus(e.db, &orderExec, constants.OrderExecutionStatusFailed, &nowOrderExec)
-
-			// 🔥 RUNNING 상태 플래그 정리
-			if e.commandHandler != nil {
-				e.commandHandler.ClearRunningStatusFlag(orderExec.ID)
-			}
 
 			// 실행 중인 단계들 취소
 			e.stepManager.CancelRunningSteps(orderExec.ID, "Cancelled by order cancel command")
@@ -299,17 +287,6 @@ func (e *Executor) executeNextOrder(commandExecution *models.CommandExecution) e
 // completeCommandExecution 명령 실행 완료 처리
 func (e *Executor) completeCommandExecution(commandExecution *models.CommandExecution) error {
 	utils.Logger.Infof("🏁 Completing command execution: ID=%d", commandExecution.ID)
-
-	// 🔥 모든 관련 OrderExecution의 RUNNING 상태 플래그 정리
-	if e.commandHandler != nil {
-		var orderExecutions []models.OrderExecution
-		e.db.Where("command_execution_id = ?", commandExecution.ID).Find(&orderExecutions)
-
-		for _, orderExec := range orderExecutions {
-			e.commandHandler.ClearRunningStatusFlag(orderExec.ID)
-			utils.Logger.Debugf("🧹 Cleared RUNNING status flag for OrderExecution ID: %d", orderExec.ID)
-		}
-	}
 
 	var failedOrderCount int64
 	e.db.Model(&models.OrderExecution{}).Where("command_execution_id = ? AND status = ?",

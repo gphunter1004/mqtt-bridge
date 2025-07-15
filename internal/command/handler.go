@@ -1,4 +1,4 @@
-// internal/command/handler.go (디버그 강화 및 수정된 버전)
+// internal/command/handler.go
 package command
 
 import (
@@ -9,6 +9,7 @@ import (
 	"mqtt-bridge/internal/config"
 	"mqtt-bridge/internal/messaging"
 	"mqtt-bridge/internal/models"
+	"mqtt-bridge/internal/repository"
 	"mqtt-bridge/internal/utils"
 	"strings"
 	"time"
@@ -89,7 +90,7 @@ func (h *Handler) handleRunningStateNotification(stateMsg *models.RobotStateMess
 	h.handleDirectActionRunning(stateMsg)
 }
 
-// 🔥 표준 명령 RUNNING 상태 처리 (기존 로직 분리)
+// 🔥 표준 명령 RUNNING 상태 처리 (수정됨: 중복 제거 로직 삭제)
 func (h *Handler) handleStandardCommandRunning(stateMsg *models.RobotStateMessage) bool {
 	utils.Logger.Debugf("🔍 Checking standard command for OrderID: %s", stateMsg.OrderID)
 
@@ -104,25 +105,18 @@ func (h *Handler) handleStandardCommandRunning(stateMsg *models.RobotStateMessag
 
 	commandType := orderExecution.CommandExecution.Command.CommandDefinition.CommandType
 	utils.Logger.Infof("🔍 Found standard command: %s for OrderID: %s", commandType, stateMsg.OrderID)
+	utils.Logger.Infof("📤 Sending RUNNING status to PLC for standard command: %s:%s",
+		commandType, constants.StatusRunning)
 
-	// 중복 전송 방지: 이미 RUNNING 상태를 보냈는지 확인
-	if !h.hasRunningStatusSent(orderExecution.ID) {
-		utils.Logger.Infof("📤 Sending RUNNING status to PLC for standard command: %s:%s",
-			commandType, constants.StatusRunning)
-
-		if err := h.plcSender.SendResponse(commandType, constants.StatusRunning, "Command is now running"); err != nil {
-			utils.Logger.Errorf("❌ Failed to send RUNNING status to PLC: %v", err)
-		} else {
-			utils.Logger.Infof("✅ RUNNING status sent to PLC: %s:%s", commandType, constants.StatusRunning)
-			h.markRunningStatusSent(orderExecution.ID)
-		}
+	if err := h.plcSender.SendResponse(commandType, constants.StatusRunning, "Command is now running"); err != nil {
+		utils.Logger.Errorf("❌ Failed to send RUNNING status to PLC: %v", err)
 	} else {
-		utils.Logger.Debugf("🔍 RUNNING status already sent for OrderExecution ID: %d", orderExecution.ID)
+		utils.Logger.Infof("✅ RUNNING status sent to PLC: %s:%s", commandType, constants.StatusRunning)
 	}
 	return true
 }
 
-// 🔥 직접 액션 RUNNING 상태 처리 (디버그 강화)
+// 🔥 직접 액션 RUNNING 상태 처리
 func (h *Handler) handleDirectActionRunning(stateMsg *models.RobotStateMessage) {
 	utils.Logger.Infof("🔍 handleDirectActionRunning called for OrderID: %s", stateMsg.OrderID)
 
@@ -152,22 +146,6 @@ func (h *Handler) handleDirectActionRunning(stateMsg *models.RobotStateMessage) 
 	}
 
 	utils.Logger.Infof("🔍 Found pending direct command: %s for OrderID: %s", fullCommand, stateMsg.OrderID)
-
-	// 이미 RUNNING 상태를 보냈는지 확인 (Redis 기반)
-	runningKey := fmt.Sprintf("direct_running_sent:%s", stateMsg.OrderID)
-	utils.Logger.Debugf("🔍 Checking RUNNING flag with key: %s", runningKey)
-
-	exists, err := h.processor.GetRedisClient().Exists(ctx, runningKey).Result()
-	if err != nil {
-		utils.Logger.Errorf("❌ Redis Exists error for key %s: %v", runningKey, err)
-		return
-	}
-
-	if exists > 0 {
-		utils.Logger.Debugf("🔍 RUNNING status already sent for OrderID: %s", stateMsg.OrderID)
-		return
-	}
-
 	utils.Logger.Infof("📤 Sending RUNNING status to PLC for direct action: %s:%s",
 		fullCommand, constants.StatusRunning)
 
@@ -175,30 +153,7 @@ func (h *Handler) handleDirectActionRunning(stateMsg *models.RobotStateMessage) 
 		utils.Logger.Errorf("❌ Failed to send RUNNING status to PLC for direct action: %v", err)
 	} else {
 		utils.Logger.Infof("✅ RUNNING status sent to PLC for direct action: %s:%s", fullCommand, constants.StatusRunning)
-
-		// RUNNING 상태 전송 완료 표시 (TTL 1시간)
-		if err := h.processor.GetRedisClient().Set(ctx, runningKey, "sent", time.Hour).Err(); err != nil {
-			utils.Logger.Errorf("❌ Failed to set RUNNING flag in Redis: %v", err)
-		} else {
-			utils.Logger.Debugf("✅ RUNNING flag set in Redis: %s", runningKey)
-		}
 	}
-}
-
-// 🔥 RUNNING 상태 전송 여부 확인 (간단한 메모리 기반 구현)
-var runningStatusSent = make(map[uint]bool)
-
-func (h *Handler) hasRunningStatusSent(orderExecutionID uint) bool {
-	return runningStatusSent[orderExecutionID]
-}
-
-func (h *Handler) markRunningStatusSent(orderExecutionID uint) {
-	runningStatusSent[orderExecutionID] = true
-}
-
-// 🔥 오더 완료 시 메모리 정리 (대문자로 변경 - 인터페이스 구현)
-func (h *Handler) ClearRunningStatusFlag(orderExecutionID uint) {
-	delete(runningStatusSent, orderExecutionID)
 }
 
 // HandlePLCCommand PLC 명령 수신 처리 (로깅 강화)
@@ -375,20 +330,27 @@ func (h *Handler) FailAllProcessingCommands(reason string) {
 	// 표준 명령들 실패 처리
 	var executions []models.CommandExecution
 	h.db.Where("status = ?", constants.CommandExecutionStatusRunning).
+		Preload("Command"). // Command도 Preload하여 업데이트
 		Preload("Command.CommandDefinition").Find(&executions)
 
 	utils.Logger.Infof("📋 Found %d running command executions to fail", len(executions))
 
 	for i, execution := range executions {
 		utils.Logger.Infof("📤 Failing command execution %d: %s", i+1, execution.Command.CommandDefinition.CommandType)
+
+		// 1. PLC에 실패 응답 전송
 		if err := h.plcSender.SendFailure(execution.Command.CommandDefinition.CommandType, reason); err != nil {
 			utils.Logger.Errorf("❌ Failed to send failure response for command %s: %v",
 				execution.Command.CommandDefinition.CommandType, err)
 		}
 
-		// 🔥 실패 처리 시 RUNNING 상태 플래그 정리
-		for _, orderExec := range execution.OrderExecutions {
-			h.ClearRunningStatusFlag(orderExec.ID)
+		// 2. DB 상태 업데이트
+		now := time.Now()
+		// CommandExecution 상태를 FAILED로 변경
+		repository.UpdateCommandExecutionStatus(h.db, &execution, constants.CommandExecutionStatusFailed, &now)
+		// 원본 Command 상태도 FAILURE로 변경
+		if execution.Command.ID > 0 { // Preload된 Command가 있는지 확인
+			repository.UpdateCommandStatus(h.db, &execution.Command, constants.CommandStatusFailure, reason)
 		}
 	}
 

@@ -3,12 +3,13 @@ package constants
 
 // Response Status 응답 상태 상수
 const (
-	StatusSuccess  = "S"
-	StatusFailure  = "F"
-	StatusRejected = "X" // R 대신 X 사용 (더 명확한 거부 의미)
-	StatusRunning  = "R" // 새로 추가: Running (진행 중)
-	StatusAbnormal = "A" // 비정상 상태
-	StatusNormal   = "N" // 정상 상태
+	StatusSuccess      = "S"
+	StatusFailure      = "F"
+	StatusRejected     = "X" // R 대신 X 사용 (더 명확한 거부 의미)
+	StatusRunning      = "R" // 새로 추가: Running (진행 중)
+	StatusAbnormal     = "A" // 비정상 상태
+	StatusNormal       = "N" // 정상 상태
+	StatusAcknowledged = "K" // 새로 추가: Acknowledged (요청 인지됨)
 )
 
 // Command Status DB 저장용 상태 상수
