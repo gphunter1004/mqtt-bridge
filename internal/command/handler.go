@@ -1,248 +1,79 @@
-// internal/command/handler.go
+// internal/command/handler.go (수정됨: 단일 FSM 생성자 사용)
 package command
 
 import (
 	"context"
 	"fmt"
 	"mqtt-bridge/internal/common/constants"
-	"mqtt-bridge/internal/common/redis"
 	"mqtt-bridge/internal/config"
 	"mqtt-bridge/internal/messaging"
 	"mqtt-bridge/internal/models"
-	"mqtt-bridge/internal/repository"
 	"mqtt-bridge/internal/utils"
 	"strings"
+	"sync"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"gorm.io/gorm"
 )
 
-// Handler PLC 명령 처리 핸들러
+// Handler는 PLC 명령을 수신하여 적절한 상태 머신을 생성하고 관리합니다.
 type Handler struct {
-	db        *gorm.DB
-	config    *config.Config
-	processor *Processor
-	plcSender *messaging.PLCResponseSender
+	db               *gorm.DB
+	config           *config.Config
+	plcSender        *messaging.PLCResponseSender
+	workflowExecutor WorkflowExecutor
+	robotChecker     RobotStatusChecker
+
+	activeFSMs map[string]*CommandStateMachine
+	mu         sync.Mutex
 }
 
-// HandleRobotStateUpdate 로봇 상태 업데이트 처리
-func (h *Handler) HandleRobotStateUpdate(stateMsg *models.RobotStateMessage) {
-	utils.Logger.Debugf("🔍 COMMAND HANDLER: HandleRobotStateUpdate called")
-	utils.Logger.Debugf("🔍 State message: OrderID=%s, ActionStates=%d",
-		stateMsg.OrderID, len(stateMsg.ActionStates))
-
-	// 1. 🔥 요청 인지(:K) 상태 알림 처리 (가장 먼저 실행)
-	h.handleAcknowledgedStateNotification(stateMsg)
-
-	// 2. 직접 명령 완료 확인 및 처리
-	result := h.processor.HandleDirectCommandStateUpdate(stateMsg)
-	if result != nil {
-		utils.Logger.Infof("📤 COMMAND HANDLER: Direct command result found: %s:%s",
-			result.Command, result.Status)
-		h.SendResponseToPLC(*result)
-	} else {
-		utils.Logger.Debugf("🔍 COMMAND HANDLER: No direct command result for OrderID: %s", stateMsg.OrderID)
-	}
-
-	// 2. 🔥 RUNNING 상태 전송
-	h.handleRunningStateNotification(stateMsg)
-}
-
-// 🔥 요청 인지(:K) 상태 알림 처리 (새로운 함수)
-func (h *Handler) handleAcknowledgedStateNotification(stateMsg *models.RobotStateMessage) {
-	if stateMsg.OrderID == "" {
-		return
-	}
-
-	ctx := context.Background()
-	// 이미 :K 응답을 보냈는지 확인하기 위한 Redis 키
-	ackKey := fmt.Sprintf("ack_sent:%s", stateMsg.OrderID)
-
-	// Redis에 이미 키가 존재하면(이미 응답을 보냈으면) 함수 종료
-	if h.processor.GetRedisClient().Exists(ctx, ackKey).Val() > 0 {
-		return
-	}
-
-	var commandToSend string
-
-	// 표준 명령인지 확인
-	var orderExecution models.OrderExecution
-	err := h.db.Preload("CommandExecution.Command.CommandDefinition").
-		Where("order_id = ?", stateMsg.OrderID).First(&orderExecution).Error
-	if err == nil && orderExecution.ID > 0 {
-		// 표준 명령인 경우 CommandType 사용
-		commandToSend = orderExecution.CommandExecution.Command.CommandDefinition.CommandType
-	} else {
-		// 직접 액션 명령인지 확인
-		key := redis.PendingDirectCommand(stateMsg.OrderID)
-		commandData, err := h.processor.GetRedisClient().HGetAll(ctx, key).Result()
-		if err == nil && len(commandData) > 0 {
-			commandToSend = commandData["full_command"]
-		}
-	}
-
-	// 보낼 커맨드를 찾았을 경우
-	if commandToSend != "" {
-		utils.Logger.Infof("✅ Order Acknowledged by Robot: %s (OrderID: %s)", commandToSend, stateMsg.OrderID)
-
-		// PLC에 :K 응답 전송
-		if err := h.plcSender.SendResponse(commandToSend, constants.StatusAcknowledged, "Order acknowledged by robot"); err != nil {
-			utils.Logger.Errorf("❌ Failed to send ACKNOWLEDGED status to PLC: %v", err)
-		} else {
-			utils.Logger.Infof("✅ ACKNOWLEDGED status sent to PLC: %s:%s", commandToSend, constants.StatusAcknowledged)
-			// Redis에 :K 응답을 보냈음을 기록 (TTL: 2시간)
-			h.processor.GetRedisClient().Set(ctx, ackKey, "sent", 24*time.Hour)
-		}
+// NewHandler는 새 명령 핸들러를 생성합니다.
+func NewHandler(
+	db *gorm.DB,
+	cfg *config.Config,
+	plcSender *messaging.PLCResponseSender,
+	executor WorkflowExecutor,
+	robotChecker RobotStatusChecker,
+) *Handler {
+	utils.Logger.Infof("🏗️ CREATING Command Handler (State Machine Enabled)")
+	return &Handler{
+		db:               db,
+		config:           cfg,
+		plcSender:        plcSender,
+		workflowExecutor: executor,
+		robotChecker:     robotChecker,
+		activeFSMs:       make(map[string]*CommandStateMachine),
 	}
 }
 
-// 🔥 RUNNING 상태 알림 처리 (디버그 강화)
-func (h *Handler) handleRunningStateNotification(stateMsg *models.RobotStateMessage) {
-	utils.Logger.Debugf("🔍 handleRunningStateNotification called for OrderID: %s", stateMsg.OrderID)
-
-	if stateMsg.OrderID == "" {
-		utils.Logger.Debugf("🔍 OrderID is empty, skipping RUNNING notification")
-		return
-	}
-
-	// 액션 상태 확인
-	hasRunningAction := false
-	for _, action := range stateMsg.ActionStates {
-		utils.Logger.Debugf("🔍 Checking action: %s -> %s", action.ActionID, action.ActionStatus)
-		if action.ActionStatus == constants.ActionStatusRunning {
-			hasRunningAction = true
-			utils.Logger.Infof("🔍 Found RUNNING action: %s", action.ActionID)
-			break
-		}
-	}
-
-	if !hasRunningAction {
-		utils.Logger.Debugf("🔍 No RUNNING actions found, skipping notification")
-		return
-	}
-
-	utils.Logger.Infof("🔍 Has RUNNING action, checking command type for OrderID: %s", stateMsg.OrderID)
-
-	// 🔥 1. 표준 명령 RUNNING 상태 처리 (기존 로직)
-	if h.handleStandardCommandRunning(stateMsg) {
-		utils.Logger.Infof("🔍 Standard command RUNNING handled for OrderID: %s", stateMsg.OrderID)
-		return
-	}
-
-	// 🔥 2. 직접 액션 RUNNING 상태 처리 (새로 추가)
-	utils.Logger.Infof("🔍 Checking direct action RUNNING for OrderID: %s", stateMsg.OrderID)
-	h.handleDirectActionRunning(stateMsg)
-}
-
-// 🔥 표준 명령 RUNNING 상태 처리 (수정됨: 중복 제거 로직 삭제)
-func (h *Handler) handleStandardCommandRunning(stateMsg *models.RobotStateMessage) bool {
-	utils.Logger.Debugf("🔍 Checking standard command for OrderID: %s", stateMsg.OrderID)
-
-	var orderExecution models.OrderExecution
-	if err := h.db.Preload("CommandExecution.Command.CommandDefinition").
-		Where("order_id = ? AND status = ?", stateMsg.OrderID, constants.OrderExecutionStatusRunning).
-		First(&orderExecution).Error; err != nil {
-		// 실행 중인 표준 오더가 없음
-		utils.Logger.Debugf("🔍 No running standard order found for OrderID: %s", stateMsg.OrderID)
-		return false
-	}
-
-	commandType := orderExecution.CommandExecution.Command.CommandDefinition.CommandType
-	utils.Logger.Infof("🔍 Found standard command: %s for OrderID: %s", commandType, stateMsg.OrderID)
-	utils.Logger.Infof("📤 Sending RUNNING status to PLC for standard command: %s:%s",
-		commandType, constants.StatusRunning)
-
-	if err := h.plcSender.SendResponse(commandType, constants.StatusRunning, "Command is now running"); err != nil {
-		utils.Logger.Errorf("❌ Failed to send RUNNING status to PLC: %v", err)
-	} else {
-		utils.Logger.Infof("✅ RUNNING status sent to PLC: %s:%s", commandType, constants.StatusRunning)
-	}
-	return true
-}
-
-// 🔥 직접 액션 RUNNING 상태 처리
-func (h *Handler) handleDirectActionRunning(stateMsg *models.RobotStateMessage) {
-	utils.Logger.Infof("🔍 handleDirectActionRunning called for OrderID: %s", stateMsg.OrderID)
-
-	ctx := context.Background()
-	key := redis.PendingDirectCommand(stateMsg.OrderID)
-
-	utils.Logger.Debugf("🔍 Checking Redis key: %s", key)
-
-	// Redis에서 대기 중인 직접 명령 확인
-	commandData, err := h.processor.GetRedisClient().HGetAll(ctx, key).Result()
-	if err != nil {
-		utils.Logger.Errorf("❌ Redis HGetAll error for key %s: %v", key, err)
-		return
-	}
-
-	if len(commandData) == 0 {
-		utils.Logger.Debugf("🔍 No data found in Redis for key: %s", key)
-		return
-	}
-
-	utils.Logger.Infof("🔍 Found Redis data for OrderID %s: %+v", stateMsg.OrderID, commandData)
-
-	fullCommand := commandData["full_command"]
-	if fullCommand == "" {
-		utils.Logger.Warnf("⚠️ Empty full_command in Redis data for OrderID: %s", stateMsg.OrderID)
-		return
-	}
-
-	utils.Logger.Infof("🔍 Found pending direct command: %s for OrderID: %s", fullCommand, stateMsg.OrderID)
-	utils.Logger.Infof("📤 Sending RUNNING status to PLC for direct action: %s:%s",
-		fullCommand, constants.StatusRunning)
-
-	if err := h.plcSender.SendResponse(fullCommand, constants.StatusRunning, "Direct action is now running"); err != nil {
-		utils.Logger.Errorf("❌ Failed to send RUNNING status to PLC for direct action: %v", err)
-	} else {
-		utils.Logger.Infof("✅ RUNNING status sent to PLC for direct action: %s:%s", fullCommand, constants.StatusRunning)
-	}
-}
-
-// HandlePLCCommand PLC 명령 수신 처리 (로깅 강화)
+// HandlePLCCommand는 PLC 명령을 받아 표준 또는 직접 액션 FSM을 생성합니다.
 func (h *Handler) HandlePLCCommand(client mqtt.Client, msg mqtt.Message) {
-	utils.Logger.Infof("🎯 COMMAND HANDLER: PLC Command received")
-	utils.Logger.Infof("📨 RAW COMMAND: %s (Topic: %s, QoS: %d)",
-		string(msg.Payload()), msg.Topic(), msg.Qos())
-
 	commandStr := strings.TrimSpace(string(msg.Payload()))
-	utils.Logger.Infof("🔧 Processing command: '%s'", commandStr)
+	utils.Logger.Infof("🎯 PLC Command received: '%s'", commandStr)
 
-	// 명령 타입 확인
-	if h.isDirectActionCommand(commandStr) {
-		utils.Logger.Infof("⚡ Direct action command detected: %s", commandStr)
-		h.handleDirectActionCommand(commandStr)
+	if !h.robotChecker.IsOnline(h.config.RobotSerialNumber) {
+		utils.Logger.Errorf("❌ Robot is offline. Rejecting command: %s", commandStr)
+		h.plcSender.SendFailure(commandStr, "Robot is not online")
 		return
 	}
 
-	utils.Logger.Infof("📋 Standard command detected: %s", commandStr)
-	h.handleStandardCommand(commandStr)
+	if IsDirectActionCommand(commandStr) {
+		h.handleDirectAction(commandStr)
+	} else {
+		h.handleStandardCommand(commandStr)
+	}
 }
 
-// handleStandardCommand 표준 명령 처리
 func (h *Handler) handleStandardCommand(commandStr string) {
-	utils.Logger.Infof("📋 Processing standard command: %s", commandStr)
-
-	// 명령 정의 조회
 	var cmdDef models.CommandDefinition
 	if err := h.db.Where("command_type = ? AND is_active = true", commandStr).First(&cmdDef).Error; err != nil {
-		utils.Logger.Errorf("❌ Command definition not found: %s (%v)", commandStr, err)
-		result := CommandResult{
-			Command:   commandStr,
-			Status:    constants.StatusFailure,
-			Message:   fmt.Sprintf("Command '%s' not defined or inactive", commandStr),
-			Timestamp: time.Now(),
-		}
-		h.SendResponseToPLC(result)
+		utils.Logger.Errorf("❌ Command definition not found: %s", commandStr)
+		h.plcSender.SendFailure(commandStr, "Command not defined or inactive")
 		return
 	}
 
-	utils.Logger.Infof("✅ Command definition found: ID=%d, Type=%s, Description=%s",
-		cmdDef.ID, cmdDef.CommandType, cmdDef.Description)
-
-	// DB에 명령 기록
 	command := &models.Command{
 		CommandDefinitionID: cmdDef.ID,
 		Status:              constants.CommandStatusPending,
@@ -250,178 +81,116 @@ func (h *Handler) handleStandardCommand(commandStr string) {
 	}
 	if err := h.db.Create(command).Error; err != nil {
 		utils.Logger.Errorf("❌ Failed to create command record: %v", err)
-		result := CommandResult{
-			Command:   commandStr,
-			Status:    constants.StatusFailure,
-			Message:   "Failed to create command record",
-			Timestamp: time.Now(),
-		}
-		h.SendResponseToPLC(result)
+		h.plcSender.SendFailure(commandStr, "Failed to record command")
 		return
 	}
+	h.db.Preload("CommandDefinition").First(&command, command.ID)
 
-	utils.Logger.Infof("📝 Command record created: ID=%d, Status=%s", command.ID, command.Status)
+	csm := NewCommandStateMachine(h.db, h.plcSender, h.workflowExecutor).ForStandardCommand(command)
+	h.addStateMachine(fmt.Sprintf("std-%d", command.ID), csm)
 
-	// 비동기로 처리
-	go func() {
-		utils.Logger.Infof("🚀 Starting async processing for command ID=%d", command.ID)
-
-		result, err := h.processor.ProcessStandardCommand(command)
-		if err != nil {
-			utils.Logger.Errorf("❌ Error processing standard command ID=%d: %v", command.ID, err)
-		}
-
-		// 🔥 중요: CR 명령의 경우 즉시 응답하지 않고 워크플로우 완료 대기
-		if result != nil {
-			if cmdDef.CommandType == constants.CommandOrderCancel {
-				utils.Logger.Infof("📤 Sending immediate response for cancel command: %s:%s",
-					result.Command, result.Status)
-				h.SendResponseToPLC(*result)
-			} else if result.Status == constants.StatusFailure {
-				utils.Logger.Infof("📤 Sending immediate failure response: %s:%s",
-					result.Command, result.Status)
-				h.SendResponseToPLC(*result)
-			} else {
-				utils.Logger.Infof("⏳ Command started successfully, waiting for workflow completion: %s",
-					result.Command)
-				// 성공적으로 시작된 워크플로우는 완료 시 자동 응답됨
-			}
-		}
-	}()
+	if err := csm.StartWorkflow(); err != nil {
+		utils.Logger.Errorf("❌ Error starting workflow for Command ID %d: %v", command.ID, err)
+		h.removeStateMachine(fmt.Sprintf("std-%d", command.ID))
+	}
 }
 
-// handleDirectActionCommand 직접 액션 명령 처리 (로깅 강화)
-func (h *Handler) handleDirectActionCommand(commandStr string) {
-	utils.Logger.Infof("⚡ Processing direct action command: %s", commandStr)
-
+func (h *Handler) handleDirectAction(commandStr string) {
 	parts := strings.Split(commandStr, ":")
-	if len(parts) < 2 {
-		utils.Logger.Errorf("❌ Invalid direct action format: %s", commandStr)
-		result := CommandResult{
-			Command:   commandStr,
-			Status:    constants.StatusFailure,
-			Message:   "Invalid command format",
-			Timestamp: time.Now(),
-		}
-		h.SendResponseToPLC(result)
-		return
-	}
-
-	baseCommand := parts[0]
-	commandType := rune(parts[1][0])
-
-	var armParam string
-	if commandType == constants.CommandTypeTrajectory && len(parts) >= 3 {
+	baseCommand, cmdType, armParam := parts[0], rune(parts[1][0]), ""
+	if len(parts) >= 3 {
 		armParam = parts[2]
 	}
 
-	utils.Logger.Infof("🔧 Parsed direct action: BaseCommand=%s, Type=%c, Arm=%s",
-		baseCommand, commandType, armParam)
-
-	req := DirectActionRequest{
-		FullCommand: commandStr,
-		BaseCommand: baseCommand,
-		CommandType: commandType,
-		ArmParam:    armParam,
-		Timestamp:   time.Now(),
+	orderID, err := h.workflowExecutor.SendDirectActionOrder(baseCommand, cmdType, armParam)
+	if err != nil {
+		utils.Logger.Errorf("❌ Failed to send direct action order: %v", err)
+		h.plcSender.SendFailure(commandStr, "Failed to send order to robot")
+		return
 	}
 
-	// 비동기로 처리
-	go func() {
-		utils.Logger.Infof("🚀 Starting async processing for direct action: %s", commandStr)
-
-		result, err := h.processor.ProcessDirectAction(req)
-		if err != nil {
-			utils.Logger.Errorf("❌ Error processing direct action %s: %v", commandStr, err)
-		}
-
-		// 🔥 직접 액션은 에러만 즉시 응답, 성공은 state 기반 완료 대기
-		if result != nil && result.Status == constants.StatusFailure {
-			utils.Logger.Infof("📤 Sending direct action error response: %s:%s",
-				result.Command, result.Status)
-			h.SendResponseToPLC(*result)
-		} else if result != nil && result.Status == constants.StatusSuccess {
-			utils.Logger.Infof("✅ Direct action order sent successfully: %s (OrderID: %s) - Waiting for state completion",
-				result.Command, result.OrderID)
-		}
-	}()
+	csm := NewCommandStateMachine(h.db, h.plcSender, h.workflowExecutor).ForDirectAction(commandStr, orderID)
+	h.addStateMachine(orderID, csm)
 }
 
-// SendResponseToPLC PLC에 응답 전송
-func (h *Handler) SendResponseToPLC(result CommandResult) {
-	utils.Logger.Infof("📤 SENDING PLC RESPONSE: %s:%s (%s)",
-		result.Command, result.Status, result.Message)
+// HandleRobotStateUpdate는 state 메시지를 적절한 FSM에 전달합니다.
+func (h *Handler) HandleRobotStateUpdate(stateMsg *models.RobotStateMessage) {
+	if stateMsg.OrderID == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	if err := h.plcSender.SendResponse(result.Command, result.Status, result.Message); err != nil {
-		utils.Logger.Errorf("❌ Failed to send PLC response: %v", err)
+	var targetKey string
+	var targetFsm *CommandStateMachine
+
+	if csm, exists := h.activeFSMs[stateMsg.OrderID]; exists {
+		targetKey = stateMsg.OrderID
+		targetFsm = csm
 	} else {
-		utils.Logger.Infof("✅ PLC response sent successfully: %s:%s", result.Command, result.Status)
+		for key, csm := range h.activeFSMs {
+			if csm.IsRelevantOrder(stateMsg.OrderID) {
+				targetKey = key
+				targetFsm = csm
+				break
+			}
+		}
+	}
+
+	if targetFsm != nil {
+		targetFsm.HandleRobotStateUpdate(stateMsg)
+		if targetFsm.IsDirectAction && (targetFsm.FSM.Is("Completed") || targetFsm.FSM.Is("Failed")) {
+			delete(h.activeFSMs, targetKey)
+			utils.Logger.Infof("Direct action FSM for order %s has been finalized and removed.", targetKey)
+		}
 	}
 }
 
-// FailAllProcessingCommands 모든 처리 중인 명령 실패 처리
+// FinishCommand는 Executor가 호출하여 FSM을 최종 완료 상태로 만듭니다.
+func (h *Handler) FinishCommand(commandID uint, success bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	fsmKey := fmt.Sprintf("std-%d", commandID)
+	if csm, exists := h.activeFSMs[fsmKey]; exists {
+		if success {
+			csm.FSM.Event(context.Background(), "command_succeeded")
+		} else {
+			csm.Fail("Command execution failed by executor")
+		}
+		delete(h.activeFSMs, fsmKey)
+		utils.Logger.Infof("FSM for command %d has been finalized and removed.", commandID)
+	}
+}
+
+// FailAllProcessingCommands는 모든 활성 FSM에 실패 이벤트를 전송합니다.
 func (h *Handler) FailAllProcessingCommands(reason string) {
 	utils.Logger.Warnf("⚠️ Failing all processing commands due to: %s", reason)
-
-	// 직접 명령들 실패 처리
-	results := h.processor.FailAllPendingCommands(reason)
-	utils.Logger.Infof("📋 Found %d pending direct commands to fail", len(results))
-
-	for i, result := range results {
-		utils.Logger.Infof("📤 Failing direct command %d: %s:%s", i+1, result.Command, result.Status)
-		h.SendResponseToPLC(result)
+	h.mu.Lock()
+	keysToRemove := []string{}
+	for key, csm := range h.activeFSMs {
+		csm.Fail(reason)
+		keysToRemove = append(keysToRemove, key)
 	}
+	h.mu.Unlock()
 
-	// 표준 명령들 실패 처리
-	var executions []models.CommandExecution
-	h.db.Where("status = ?", constants.CommandExecutionStatusRunning).
-		Preload("Command"). // Command도 Preload하여 업데이트
-		Preload("Command.CommandDefinition").Find(&executions)
-
-	utils.Logger.Infof("📋 Found %d running command executions to fail", len(executions))
-
-	for i, execution := range executions {
-		utils.Logger.Infof("📤 Failing command execution %d: %s", i+1, execution.Command.CommandDefinition.CommandType)
-
-		// 1. PLC에 실패 응답 전송
-		if err := h.plcSender.SendFailure(execution.Command.CommandDefinition.CommandType, reason); err != nil {
-			utils.Logger.Errorf("❌ Failed to send failure response for command %s: %v",
-				execution.Command.CommandDefinition.CommandType, err)
-		}
-
-		// 2. DB 상태 업데이트
-		now := time.Now()
-		// CommandExecution 상태를 FAILED로 변경
-		repository.UpdateCommandExecutionStatus(h.db, &execution, constants.CommandExecutionStatusFailed, &now)
-		// 원본 Command 상태도 FAILURE로 변경
-		if execution.Command.ID > 0 { // Preload된 Command가 있는지 확인
-			repository.UpdateCommandStatus(h.db, &execution.Command, constants.CommandStatusFailure, reason)
-		}
+	for _, key := range keysToRemove {
+		h.removeStateMachine(key)
 	}
-
-	utils.Logger.Infof("✅ All processing commands failed with reason: %s", reason)
 }
 
-// isDirectActionCommand 직접 액션 명령인지 확인
-func (h *Handler) isDirectActionCommand(commandStr string) bool {
-	isDirect := strings.HasSuffix(commandStr, ":I") || strings.Contains(commandStr, ":T")
-	utils.Logger.Debugf("🔍 Is direct action command '%s': %t", commandStr, isDirect)
-	return isDirect
+func (h *Handler) addStateMachine(key string, csm *CommandStateMachine) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.activeFSMs[key] = csm
 }
 
-// NewHandler 새 명령 핸들러 생성
-func NewHandler(db *gorm.DB, cfg *config.Config, processor *Processor,
-	plcSender *messaging.PLCResponseSender) *Handler {
+func (h *Handler) removeStateMachine(key string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.activeFSMs, key)
+}
 
-	utils.Logger.Infof("🏗️ CREATING Command Handler")
-
-	handler := &Handler{
-		db:        db,
-		config:    cfg,
-		processor: processor,
-		plcSender: plcSender,
-	}
-
-	utils.Logger.Infof("✅ Command Handler CREATED")
-	return handler
+func IsDirectActionCommand(commandStr string) bool {
+	return strings.HasSuffix(commandStr, ":I") || strings.Contains(commandStr, ":T")
 }

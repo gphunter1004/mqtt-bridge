@@ -1,13 +1,29 @@
-// internal/command/interfaces.go (새로운 파일)
+// internal/command/interfaces.go (수정됨)
 package command
 
-import "mqtt-bridge/internal/models"
+import (
+	"mqtt-bridge/internal/models"
 
-// CommandHandler 인터페이스 정의 (순환 참조 방지용)
+	mqtt "github.com/eclipse/paho.mqtt.golang"
+)
+
+// CommandHandler는 PLC 명령 및 로봇 상태를 처리하는 최상위 인터페이스
 type CommandHandler interface {
-	FailAllProcessingCommands(reason string)
+	HandlePLCCommand(client mqtt.Client, msg mqtt.Message)
 	HandleRobotStateUpdate(stateMsg *models.RobotStateMessage)
+	FailAllProcessingCommands(reason string)
+	FinishCommand(commandID uint, success bool)
 }
 
-// 구현 확인을 위한 컴파일 타임 검증
-var _ CommandHandler = (*Handler)(nil)
+// WorkflowExecutor는 워크플로우 실행을 담당하는 인터페이스
+type WorkflowExecutor interface {
+	// 인자를 *models.CommandExecution에서 다시 *models.Command로 변경
+	ExecuteCommandOrder(command *models.Command) error
+	SendDirectActionOrder(baseCommand string, commandType rune, armParam string) (string, error)
+	CancelAllRunningOrders() error
+}
+
+// RobotStatusChecker는 로봇의 온라인 상태를 확인하는 인터페이스
+type RobotStatusChecker interface {
+	IsOnline(serialNumber string) bool
+}
