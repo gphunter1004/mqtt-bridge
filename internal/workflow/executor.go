@@ -1,4 +1,4 @@
-// internal/workflow/executor.go (통합된 버전)
+// internal/workflow/executor.go
 package workflow
 
 import (

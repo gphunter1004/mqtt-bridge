@@ -1,4 +1,4 @@
-// internal/messaging/plc_response.go (새 파일)
+// internal/messaging/plc_response.go
 package messaging
 
 import (

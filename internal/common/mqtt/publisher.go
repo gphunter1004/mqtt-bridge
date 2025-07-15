@@ -209,7 +209,7 @@ func (p *Publisher) PublishDirectAction(baseCommand string, commandType rune, ar
 	return orderID, nil
 }
 
-// publishJSON JSON 메시지 발행 (내부 헬퍼)
+// publishJSON JSON 메시지 발행
 func (p *Publisher) publishJSON(topic string, payload interface{}, messageType string) error {
 	if !p.client.IsConnected() {
 		return fmt.Errorf("MQTT client is not connected")
@@ -234,18 +234,4 @@ func (p *Publisher) publishJSON(topic string, payload interface{}, messageType s
 // IsConnected 연결 상태 확인
 func (p *Publisher) IsConnected() bool {
 	return p.client.IsConnected()
-}
-
-// GetConfig 설정 반환
-func (p *Publisher) GetConfig() *config.Config {
-	return p.config
-}
-
-// GetTopics 사용하는 토픽들 반환
-func (p *Publisher) GetTopics() []string {
-	return []string{
-		constants.TopicBridgeResponse,
-		constants.GetMeiliOrderTopic(p.config.RobotManufacturer, p.config.RobotSerialNumber),
-		constants.GetMeiliInstantActionsTopic(p.config.RobotManufacturer, p.config.RobotSerialNumber),
-	}
 }

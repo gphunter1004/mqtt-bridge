@@ -77,9 +77,10 @@ func (s *Subscriber) SubscribeAll() error {
 
 // handleMessage 수신된 메시지를 라우터에 전달
 func (s *Subscriber) handleMessage(client mqtt.Client, msg mqtt.Message) {
-	// 📨 수신 메시지 로그
-	utils.Logger.Infof("📨 MESSAGE RECEIVED Topic  : %s", msg.Topic())
-	utils.Logger.Infof("📨 MESSAGE RECEIVED Content: %s", string(msg.Payload()))
+	// 📨 모든 수신 메시지에 대한 통일된 로깅
+	utils.Logger.Infof("📨 MQTT RECEIVED Topic  : %s", msg.Topic())
+	utils.Logger.Infof("📨 MQTT RECEIVED Content: %s", string(msg.Payload()))
+	utils.Logger.Infof("📨 MQTT RECEIVED QoS    : %d, MessageID: %d", msg.Qos(), msg.MessageID())
 
 	// 라우터에 메시지 전달
 	s.router.RouteMessage(client, msg)

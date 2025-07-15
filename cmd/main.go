@@ -55,7 +55,7 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	utils.Logger.Info("🎉 MQTT Bridge started successfully with streamlined architecture")
+	utils.Logger.Info("🎉 MQTT Bridge started successfully")
 
 	<-sigChan
 	utils.Logger.Info("🛑 Shutting down...")

@@ -125,7 +125,6 @@ func (s *Service) Start(ctx context.Context) error {
 		utils.Logger.Info("Context cancelled, stopping bridge service")
 	}()
 
-	utils.Logger.Infof("🎉 Bridge Service STARTED Successfully")
 	return nil
 }
 

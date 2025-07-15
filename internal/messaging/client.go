@@ -72,11 +72,28 @@ func (c *MQTTClient) Publish(topic string, qos byte, retained bool, payload inte
 		return fmt.Errorf("MQTT client is not connected")
 	}
 
+	// 📤 발신 메시지 로깅
+	var payloadStr string
+	switch v := payload.(type) {
+	case string:
+		payloadStr = v
+	case []byte:
+		payloadStr = string(v)
+	default:
+		payloadStr = fmt.Sprintf("%v", v)
+	}
+
+	utils.Logger.Infof("📤 MQTT SENDING Topic  : %s", topic)
+	utils.Logger.Infof("📤 MQTT SENDING Content: %s", payloadStr)
+	utils.Logger.Infof("📤 MQTT SENDING QoS    : %d, Retained: %v", qos, retained)
+
 	token := c.client.Publish(topic, qos, retained, payload)
 	if token.Wait() && token.Error() != nil {
+		utils.Logger.Errorf("❌ MQTT SEND FAILED: %s - %v", topic, token.Error())
 		return fmt.Errorf("failed to publish message: %v", token.Error())
 	}
 
+	utils.Logger.Infof("✅ MQTT SEND SUCCESS: %s", topic)
 	return nil
 }
 
