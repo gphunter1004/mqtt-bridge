@@ -1,9 +1,11 @@
-// internal/command/handler.go
+// internal/command/handler.go (디버그 강화 및 수정된 버전)
 package command
 
 import (
+	"context"
 	"fmt"
 	"mqtt-bridge/internal/common/constants"
+	"mqtt-bridge/internal/common/redis"
 	"mqtt-bridge/internal/config"
 	"mqtt-bridge/internal/messaging"
 	"mqtt-bridge/internal/models"
@@ -45,48 +47,140 @@ func (h *Handler) HandleRobotStateUpdate(stateMsg *models.RobotStateMessage) {
 		utils.Logger.Debugf("🔍 COMMAND HANDLER: No direct command result for OrderID: %s", stateMsg.OrderID)
 	}
 
-	// 2. 🔥 새로운 기능: RUNNING 상태 전송
+	// 2. 🔥 RUNNING 상태 전송 (표준 명령 + 직접 액션 모두 지원)
 	h.handleRunningStateNotification(stateMsg)
 }
 
-// 🔥 새로운 메서드: RUNNING 상태 알림 처리
+// 🔥 RUNNING 상태 알림 처리 (디버그 강화)
 func (h *Handler) handleRunningStateNotification(stateMsg *models.RobotStateMessage) {
-	if stateMsg.OrderID == "" {
-		return
-	}
+	utils.Logger.Debugf("🔍 handleRunningStateNotification called for OrderID: %s", stateMsg.OrderID)
 
-	// 현재 실행 중인 명령이 있는지 확인
-	var orderExecution models.OrderExecution
-	if err := h.db.Preload("CommandExecution.Command.CommandDefinition").
-		Where("order_id = ? AND status = ?", stateMsg.OrderID, constants.OrderExecutionStatusRunning).
-		First(&orderExecution).Error; err != nil {
-		// 실행 중인 오더가 없으면 무시
+	if stateMsg.OrderID == "" {
+		utils.Logger.Debugf("🔍 OrderID is empty, skipping RUNNING notification")
 		return
 	}
 
 	// 액션 상태 확인
 	hasRunningAction := false
 	for _, action := range stateMsg.ActionStates {
+		utils.Logger.Debugf("🔍 Checking action: %s -> %s", action.ActionID, action.ActionStatus)
 		if action.ActionStatus == constants.ActionStatusRunning {
 			hasRunningAction = true
+			utils.Logger.Infof("🔍 Found RUNNING action: %s", action.ActionID)
 			break
 		}
 	}
 
-	// RUNNING 액션이 있고, 아직 RUNNING 상태 알림을 보내지 않았다면 전송
-	if hasRunningAction {
-		commandType := orderExecution.CommandExecution.Command.CommandDefinition.CommandType
+	if !hasRunningAction {
+		utils.Logger.Debugf("🔍 No RUNNING actions found, skipping notification")
+		return
+	}
 
-		// 🔥 중복 전송 방지: 이미 RUNNING 상태를 보냈는지 확인
-		if !h.hasRunningStatusSent(orderExecution.ID) {
-			utils.Logger.Infof("📤 Sending RUNNING status to PLC: %s:%s", commandType, constants.StatusRunning)
+	utils.Logger.Infof("🔍 Has RUNNING action, checking command type for OrderID: %s", stateMsg.OrderID)
 
-			if err := h.plcSender.SendResponse(commandType, constants.StatusRunning, "Command is now running"); err != nil {
-				utils.Logger.Errorf("❌ Failed to send RUNNING status to PLC: %v", err)
-			} else {
-				utils.Logger.Infof("✅ RUNNING status sent to PLC: %s:%s", commandType, constants.StatusRunning)
-				h.markRunningStatusSent(orderExecution.ID)
-			}
+	// 🔥 1. 표준 명령 RUNNING 상태 처리 (기존 로직)
+	if h.handleStandardCommandRunning(stateMsg) {
+		utils.Logger.Infof("🔍 Standard command RUNNING handled for OrderID: %s", stateMsg.OrderID)
+		return
+	}
+
+	// 🔥 2. 직접 액션 RUNNING 상태 처리 (새로 추가)
+	utils.Logger.Infof("🔍 Checking direct action RUNNING for OrderID: %s", stateMsg.OrderID)
+	h.handleDirectActionRunning(stateMsg)
+}
+
+// 🔥 표준 명령 RUNNING 상태 처리 (기존 로직 분리)
+func (h *Handler) handleStandardCommandRunning(stateMsg *models.RobotStateMessage) bool {
+	utils.Logger.Debugf("🔍 Checking standard command for OrderID: %s", stateMsg.OrderID)
+
+	var orderExecution models.OrderExecution
+	if err := h.db.Preload("CommandExecution.Command.CommandDefinition").
+		Where("order_id = ? AND status = ?", stateMsg.OrderID, constants.OrderExecutionStatusRunning).
+		First(&orderExecution).Error; err != nil {
+		// 실행 중인 표준 오더가 없음
+		utils.Logger.Debugf("🔍 No running standard order found for OrderID: %s", stateMsg.OrderID)
+		return false
+	}
+
+	commandType := orderExecution.CommandExecution.Command.CommandDefinition.CommandType
+	utils.Logger.Infof("🔍 Found standard command: %s for OrderID: %s", commandType, stateMsg.OrderID)
+
+	// 중복 전송 방지: 이미 RUNNING 상태를 보냈는지 확인
+	if !h.hasRunningStatusSent(orderExecution.ID) {
+		utils.Logger.Infof("📤 Sending RUNNING status to PLC for standard command: %s:%s",
+			commandType, constants.StatusRunning)
+
+		if err := h.plcSender.SendResponse(commandType, constants.StatusRunning, "Command is now running"); err != nil {
+			utils.Logger.Errorf("❌ Failed to send RUNNING status to PLC: %v", err)
+		} else {
+			utils.Logger.Infof("✅ RUNNING status sent to PLC: %s:%s", commandType, constants.StatusRunning)
+			h.markRunningStatusSent(orderExecution.ID)
+		}
+	} else {
+		utils.Logger.Debugf("🔍 RUNNING status already sent for OrderExecution ID: %d", orderExecution.ID)
+	}
+	return true
+}
+
+// 🔥 직접 액션 RUNNING 상태 처리 (디버그 강화)
+func (h *Handler) handleDirectActionRunning(stateMsg *models.RobotStateMessage) {
+	utils.Logger.Infof("🔍 handleDirectActionRunning called for OrderID: %s", stateMsg.OrderID)
+
+	ctx := context.Background()
+	key := redis.PendingDirectCommand(stateMsg.OrderID)
+
+	utils.Logger.Debugf("🔍 Checking Redis key: %s", key)
+
+	// Redis에서 대기 중인 직접 명령 확인
+	commandData, err := h.processor.GetRedisClient().HGetAll(ctx, key).Result()
+	if err != nil {
+		utils.Logger.Errorf("❌ Redis HGetAll error for key %s: %v", key, err)
+		return
+	}
+
+	if len(commandData) == 0 {
+		utils.Logger.Debugf("🔍 No data found in Redis for key: %s", key)
+		return
+	}
+
+	utils.Logger.Infof("🔍 Found Redis data for OrderID %s: %+v", stateMsg.OrderID, commandData)
+
+	fullCommand := commandData["full_command"]
+	if fullCommand == "" {
+		utils.Logger.Warnf("⚠️ Empty full_command in Redis data for OrderID: %s", stateMsg.OrderID)
+		return
+	}
+
+	utils.Logger.Infof("🔍 Found pending direct command: %s for OrderID: %s", fullCommand, stateMsg.OrderID)
+
+	// 이미 RUNNING 상태를 보냈는지 확인 (Redis 기반)
+	runningKey := fmt.Sprintf("direct_running_sent:%s", stateMsg.OrderID)
+	utils.Logger.Debugf("🔍 Checking RUNNING flag with key: %s", runningKey)
+
+	exists, err := h.processor.GetRedisClient().Exists(ctx, runningKey).Result()
+	if err != nil {
+		utils.Logger.Errorf("❌ Redis Exists error for key %s: %v", runningKey, err)
+		return
+	}
+
+	if exists > 0 {
+		utils.Logger.Debugf("🔍 RUNNING status already sent for OrderID: %s", stateMsg.OrderID)
+		return
+	}
+
+	utils.Logger.Infof("📤 Sending RUNNING status to PLC for direct action: %s:%s",
+		fullCommand, constants.StatusRunning)
+
+	if err := h.plcSender.SendResponse(fullCommand, constants.StatusRunning, "Direct action is now running"); err != nil {
+		utils.Logger.Errorf("❌ Failed to send RUNNING status to PLC for direct action: %v", err)
+	} else {
+		utils.Logger.Infof("✅ RUNNING status sent to PLC for direct action: %s:%s", fullCommand, constants.StatusRunning)
+
+		// RUNNING 상태 전송 완료 표시 (TTL 1시간)
+		if err := h.processor.GetRedisClient().Set(ctx, runningKey, "sent", time.Hour).Err(); err != nil {
+			utils.Logger.Errorf("❌ Failed to set RUNNING flag in Redis: %v", err)
+		} else {
+			utils.Logger.Debugf("✅ RUNNING flag set in Redis: %s", runningKey)
 		}
 	}
 }

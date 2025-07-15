@@ -1,4 +1,4 @@
-// internal/command/processor.go (공통 기능 적용)
+// internal/command/processor.go
 package command
 
 import (
@@ -47,6 +47,11 @@ func NewProcessor(db *gorm.DB, redisClient *redisClient.Client, cfg *config.Conf
 		robotChecker:     robotChecker,
 		workflowExecutor: workflowExecutor,
 	}
+}
+
+// Redis 클라이언트 접근 메서드
+func (p *Processor) GetRedisClient() *redisClient.Client {
+	return p.redisClient
 }
 
 // ProcessDirectAction 직접 액션 명령 처리
@@ -219,6 +224,10 @@ func (p *Processor) HandleDirectCommandStateUpdate(stateMsg *models.RobotStateMe
 	if result != "" {
 		// 결과가 확정되면 Redis에서 제거
 		p.redisClient.Del(ctx, key)
+
+		// 🔥 직접 액션 완료 시 RUNNING 상태 플래그도 정리
+		runningKey := fmt.Sprintf("direct_running_sent:%s", stateMsg.OrderID)
+		p.redisClient.Del(ctx, runningKey)
 
 		utils.Logger.Infof("✅ Direct command completed: %s -> %s", fullCommand, result)
 

@@ -2,9 +2,9 @@
 package messaging
 
 import (
-	"fmt"
 	"mqtt-bridge/internal/common/constants"
 	"mqtt-bridge/internal/utils"
+	"strings"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
@@ -23,9 +23,27 @@ func NewPLCResponseSender(client mqtt.Client, topic string) *PLCResponseSender {
 	}
 }
 
-// SendResponse PLC에 응답 전송 (통합된 공통 로직)
+// 직접 액션 응답 표준화
+func (p *PLCResponseSender) standardizeResponse(command, status string) string {
+	// 직접 액션인지 확인
+	if strings.Contains(command, ":") {
+		// 직접 액션을 기본 명령으로 단순화
+		parts := strings.Split(command, ":")
+		if len(parts) > 0 {
+			baseCommand := parts[0]
+			standardized := baseCommand + ":" + status
+			utils.Logger.Infof("🔄 Response standardized: %s:%s → %s", command, status, standardized)
+			return standardized
+		}
+	}
+
+	// 표준 명령은 그대로
+	return command + ":" + status
+}
+
+// SendResponse PLC에 응답 전송
 func (p *PLCResponseSender) SendResponse(command, status, errMsg string) error {
-	response := fmt.Sprintf("%s:%s", command, status)
+	response := p.standardizeResponse(command, status)
 
 	// 실패 시 에러 로그
 	if status == constants.StatusFailure && errMsg != "" {
